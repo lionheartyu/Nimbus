@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+message FileHeader {
+  string filename = 1;
+  uint64 filesize = 2;
+}

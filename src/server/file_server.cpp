@@ -80,6 +80,30 @@ void FileServer::onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp)
             receiving_ = true;
             received_ = 0;
             std::cout << "Start receiving file: " << filename_ << ", size: " << file_size_ << std::endl;
+
+            // === 处理空文件 ===
+            if (file_size_ == 0) {
+                outfile_.close();
+                receiving_ = false;
+                conn->send("UPLOAD OK\n");
+                std::cout << std::endl << "File received: " << filename_ << std::endl;
+
+                // 上传到 Minio
+                if (minio_ && minio_->upload(filename_, filename_)) {
+                    std::cout << "Upload to Minio success: " << filename_ << std::endl;
+                    std::remove(filename_.c_str());
+                } else {
+                    std::cerr << "Upload to Minio failed: " << filename_ << std::endl;
+                }
+                // 重置状态，准备下一个文件
+                pb_head_parsed_ = false;
+                pb_head_len_ = 0;
+                pb_head_buf_.clear();
+                filename_.clear();
+                file_size_ = 0;
+                received_ = 0;
+                return;
+            }
         } else if (receiving_) {
             // 正在接收文件内容
             size_t to_write = std::min(static_cast<uint64_t>(buf->readableBytes()), file_size_ - received_);

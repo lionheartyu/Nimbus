@@ -25,8 +25,10 @@ int main() {
     }
     std::streamsize filesize = infile.tellg();
     infile.seekg(0, std::ios::beg);
+
+    // 不要判断 filesize==0，允许空文件上传
     std::vector<char> filedata(filesize);
-    if (!infile.read(filedata.data(), filesize)) {
+    if (filesize > 0 && !infile.read(filedata.data(), filesize)) {
         std::cerr << "Read file error." << std::endl;
         return 1;
     }

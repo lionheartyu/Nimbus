@@ -12,8 +12,13 @@ FileServer::FileServer(EventLoop* loop, const InetAddress& addr, const std::stri
     // 设置工作线程数量
     server_.setThreadNum(3);
 
-    // 初始化 CephStorage（参数可根据实际情况调整）
-    ceph_ = std::make_unique<CephStorage>("/etc/ceph/ceph.conf", "admin", "data");
+    // 初始化 MinioStorage（参数请根据你的实际配置填写）
+    minio_ = std::make_unique<MinioStorage>(
+        "127.0.0.1:9000",   // MinIO endpoint
+        "minioadmin",       // Access Key
+        "minioadmin",       // Secret Key
+        "data"              // Bucket name
+    );
 }
 
 void FileServer::start() {
@@ -94,13 +99,13 @@ void FileServer::onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp)
                 conn->send("UPLOAD OK\n");
                 std::cout << std::endl << "File received: " << filename_ << std::endl;
 
-                // 上传到 Ceph
-                if (ceph_ && ceph_->upload(filename_, filename_)) {
-                    std::cout << "Upload to Ceph success: " << filename_ << std::endl;
+                // 上传到 Minio
+                if (minio_ && minio_->upload(filename_, filename_)) {
+                    std::cout << "Upload to Minio success: " << filename_ << std::endl;
                     // 可选：删除本地临时文件
                     std::remove(filename_.c_str());
                 } else {
-                    std::cerr << "Upload to Ceph failed: " << filename_ << std::endl;
+                    std::cerr << "Upload to Minio failed: " << filename_ << std::endl;
                 }
             }
         } else {

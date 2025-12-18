@@ -3,7 +3,7 @@
 #include <string>
 #include <fstream>
 #include <memory>
-#include "../storage/ceph_storage.h"
+#include "../storage/minio_storage.h"
 #include "../../proto/file.pb.h" // 路径按实际调整
 
 class FileServer
@@ -31,6 +31,6 @@ private:
     EventLoop *loop_;
     TcpServer server_;
     
-    //ceph存储成员
-    std::unique_ptr<CephStorage> ceph_;
+    // Minio存储成员
+    std::unique_ptr<MinioStorage> minio_;
 };

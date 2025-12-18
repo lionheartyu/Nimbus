@@ -3,28 +3,33 @@ project(NimbusServer)
 
 set(CMAKE_CXX_STANDARD 14)
 
-# 增加 proto 目录和 ceph 头文件目录
+# 增加 proto 目录和 minio/aws 头文件目录
 include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/proto
     /usr/include/mymuduo
-    /usr/include/rados
+    # AWS SDK include path（如有需要可加）
+    # /usr/local/include
 )
 
 link_directories(
     /usr/lib
+    # /usr/local/lib  # 如果aws-sdk-cpp安装在这里
 )
 
 # Protobuf
 find_package(Protobuf REQUIRED)
 message(STATUS "Using protobuf ${Protobuf_VERSION}")
 
+# AWS SDK for C++ (S3)
+find_package(AWSSDK REQUIRED COMPONENTS s3)
+
 # 定义服务器可执行文件及其源文件
 add_executable(nimbus_server
     main.cpp
     server/server.cpp
     server/file_server.cpp
-    storage/ceph_storage.cpp
+    storage/minio_storage.cpp
     ../proto/file.pb.cc
 )
 
@@ -45,8 +50,8 @@ set_target_properties(file_client PROPERTIES
 target_link_libraries(nimbus_server
     mymuduo
     pthread
-    rados
     ${Protobuf_LIBRARIES}
+    ${AWSSDK_LINK_LIBRARIES}  # AWS S3 SDK
 )
 
 target_link_libraries(file_client

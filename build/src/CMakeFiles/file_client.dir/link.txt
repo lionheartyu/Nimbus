@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/file_client.dir/client/file_client.cpp.o CMakeFiles/file_client.dir/__/proto/file.pb.cc.o -o ../../n_client_target/file_client  -lpthread /usr/lib/x86_64-linux-gnu/libprotobuf.so 

@@ -5,6 +5,8 @@
 #include <aws/s3/model/PutObjectRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/DeleteObjectRequest.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
+#include <aws/s3/model/CopyObjectRequest.h>
 #include <fstream>
 #include <iostream>
 
@@ -71,4 +73,49 @@ bool MinioStorage::remove(const std::string& objectName)
 
     auto outcome = client_->DeleteObject(request); // 执行删除
     return outcome.IsSuccess();                   // 返回是否成功
+}
+
+// 列出 Minio/S3 桶中的所有对象
+bool MinioStorage::listObjects(std::vector<std::string>& objects)
+{
+    Aws::S3::Model::ListObjectsV2Request request;
+    request.SetBucket(bucket_);
+
+    auto outcome = client_->ListObjectsV2(request);
+    if (!outcome.IsSuccess()) return false;
+
+    const auto& result = outcome.GetResult();
+    for (const auto& obj : result.GetContents()) {
+        objects.push_back(obj.GetKey());
+    }
+    return true;
+}
+
+// 新增：带前缀列举
+bool MinioStorage::listObjectsWithPrefix(const std::string& prefix, std::vector<std::string>& objects)
+{
+    Aws::S3::Model::ListObjectsV2Request request;
+    request.SetBucket(bucket_);
+    request.SetPrefix(prefix);
+
+    auto outcome = client_->ListObjectsV2(request);
+    if (!outcome.IsSuccess()) return false;
+
+    const auto& result = outcome.GetResult();
+    for (const auto& obj : result.GetContents()) {
+        objects.push_back(obj.GetKey());
+    }
+    return true;
+}
+
+// 新增：对象拷贝
+bool MinioStorage::copyObject(const std::string& src, const std::string& dst)
+{
+    Aws::S3::Model::CopyObjectRequest request;
+    request.SetBucket(bucket_);
+    request.SetCopySource(bucket_ + "/" + src); // 源对象
+    request.SetKey(dst);                        // 目标对象
+
+    auto outcome = client_->CopyObject(request);
+    return outcome.IsSuccess();
 }

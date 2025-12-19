@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <vector>
 #include <aws/core/Aws.h>
 #include <aws/s3/S3Client.h>
 
@@ -14,6 +15,10 @@ public:
     bool upload(const std::string& localFile, const std::string& objectName);
     bool download(const std::string& objectName, const std::string& localFile);
     bool remove(const std::string& objectName);
+    bool listObjects(std::vector<std::string>& objects);
+
+    bool listObjectsWithPrefix(const std::string& prefix, std::vector<std::string>& objects);
+    bool copyObject(const std::string& src, const std::string& dst);
 
 private:
     std::string bucket_;

@@ -31,6 +31,6 @@ private:
     EventLoop *loop_;
     TcpServer server_;
     
-    // Minio存储成员
+    // Minio存储成员，支持上传、下载、列举
     std::unique_ptr<MinioStorage> minio_;
 };

@@ -1,6 +1,0 @@
-/home/lion/my_project/Nimbus/build/CMakeFiles/edit_cache.dir
-/home/lion/my_project/Nimbus/build/CMakeFiles/rebuild_cache.dir
-/home/lion/my_project/Nimbus/build/src/CMakeFiles/nimbus_server.dir
-/home/lion/my_project/Nimbus/build/src/CMakeFiles/file_client.dir
-/home/lion/my_project/Nimbus/build/src/CMakeFiles/edit_cache.dir
-/home/lion/my_project/Nimbus/build/src/CMakeFiles/rebuild_cache.dir

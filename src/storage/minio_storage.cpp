@@ -119,3 +119,16 @@ bool MinioStorage::copyObject(const std::string& src, const std::string& dst)
     auto outcome = client_->CopyObject(request);
     return outcome.IsSuccess();
 }
+
+// 新增：生成预签名 URL
+std::string MinioStorage::presignedUrl(const std::string& objectName, int expireSeconds) {
+    Aws::S3::Model::GetObjectRequest request;
+    request.SetBucket(bucket_);
+    request.SetKey(objectName);
+
+    Aws::Http::URI uri;
+    auto outcome = client_->GeneratePresignedUrl(
+        bucket_, objectName, Aws::Http::HttpMethod::HTTP_GET, expireSeconds);
+    if (outcome.empty()) return "";
+    return outcome;
+}

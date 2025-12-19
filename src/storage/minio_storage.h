@@ -4,6 +4,9 @@
 #include <vector>
 #include <aws/core/Aws.h>
 #include <aws/s3/S3Client.h>
+#include <aws/s3/model/GetObjectRequest.h>
+#include <aws/core/http/URI.h>
+#include <aws/core/utils/DateTime.h>
 
 class MinioStorage {
 public:
@@ -19,6 +22,7 @@ public:
 
     bool listObjectsWithPrefix(const std::string& prefix, std::vector<std::string>& objects);
     bool copyObject(const std::string& src, const std::string& dst);
+    std::string presignedUrl(const std::string& objectName, int expireSeconds = 3600);
 
 private:
     std::string bucket_;

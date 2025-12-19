@@ -45,7 +45,8 @@ add_executable(file_client
 # 定义 Windows 客户端可执行文件
 add_executable(file_client_windows
     client/file_client_windows.cpp
-    client/main.cpp         # <--- 加上这一行
+    client/draggable_listwidget.cpp
+    client/main.cpp
     ../proto/file.pb.cc
 )
 

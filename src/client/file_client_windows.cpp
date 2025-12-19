@@ -1,4 +1,5 @@
 #include "file_client_windows.h"
+#include "draggable_listwidget.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
@@ -12,6 +13,9 @@
 #include <QMenu>
 #include <QDesktopServices>
 #include <QUrl>
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include "../../proto/file.pb.h"
 
 #include <sys/socket.h>
@@ -19,7 +23,8 @@
 #include <unistd.h>
 
 // 构造函数：初始化界面和控件
-FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
+FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent)
+{
     setWindowTitle("Nimbus 文件助手");
     setMinimumSize(520, 360);
     resize(640, 480);
@@ -31,8 +36,7 @@ FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
         "font-size: 26px; font-weight: bold; color: #1565c0;"
         "padding: 12px 0 18px 0;"
         "letter-spacing: 2px;"
-        "border-bottom: 2px solid #90caf9;"
-    );
+        "border-bottom: 2px solid #90caf9;");
 
     // 文件路径输入框
     filePathEdit = new QLineEdit(this);
@@ -45,8 +49,7 @@ FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
         "  padding: 6px;"
         "  font-size: 15px;"
         "  background: #e3f2fd;"
-        "}"
-    );
+        "}");
 
     // 浏览按钮
     browseBtn = new QPushButton("浏览...", this);
@@ -62,96 +65,56 @@ FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
         "}"
         "QPushButton:hover {"
         "  background-color: #1976d2;"
-        "}"
-    );
+        "}");
 
     // 上传按钮
     uploadBtn = new QPushButton("上传文件", this);
-    uploadBtn->setStyleSheet(
+    const char* btnStyle = 
         "QPushButton {"
-        "  background-color: #43A047;"
-        "  color: white;"
-        "  font-size: 17px;"
+        "  font-size: 16px;"
         "  font-weight: bold;"
         "  border-radius: 8px;"
         "  padding: 8px 0;"
         "  border: none;"
-        "  margin-top: 10px;"
         "}"
         "QPushButton:hover {"
-        "  background-color: #388e3c;"
-        "}"
+        "  opacity: 0.9;"
+        "}";
+    uploadBtn->setStyleSheet(
+        QString(
+            "QPushButton { background-color: #43A047; color: white; %1 }"
+            "QPushButton:hover { background-color: #388e3c; }"
+        ).arg("font-size:16px; font-weight:bold; border-radius:8px; padding:8px 0; border:none;")
     );
-    uploadBtn->setMinimumHeight(36);
-
-    // 上传文件夹按钮（成员变量）
-    uploadFolderBtn = new QPushButton("上传文件夹", this);
-    uploadFolderBtn->setStyleSheet(
-        "QPushButton {"
-        "  background-color: #00897b;"
-        "  color: white;"
-        "  font-weight: bold;"
-        "  border-radius: 8px;"
-        "  padding: 6px 18px;"
-        "  font-size: 15px;"
-        "  border: none;"
-        "}"
-        "QPushButton:hover {"
-        "  background-color: #00695c;"
-        "}"
-    );
-    uploadFolderBtn->setMinimumHeight(36);
 
     // 新增：列举和下载按钮
     downloadBtn = new QPushButton("下载文件", this);
-    listBtn = new QPushButton("查看云端文件", this);
-    recycleBtn = new QPushButton("回收站", this);
-
     downloadBtn->setStyleSheet(
-        "QPushButton {"
-        "  background-color: #1976d2;"
-        "  color: white;"
-        "  font-weight: bold;"
-        "  border-radius: 8px;"
-        "  padding: 6px 18px;"
-        "  font-size: 15px;"
-        "  border: none;"
-        "}"
-        "QPushButton:hover {"
-        "  background-color: #0d47a1;"
-        "}"
+        QString(
+            "QPushButton { background-color: #1976d2; color: white; %1 }"
+            "QPushButton:hover { background-color: #0d47a1; }"
+        ).arg("font-size:16px; font-weight:bold; border-radius:8px; padding:8px 0; border:none;")
     );
-
+    listBtn = new QPushButton("查看云端文件", this);
     listBtn->setStyleSheet(
-        "QPushButton {"
-        "  background-color: #ffa726;"
-        "  color: white;"
-        "  font-weight: bold;"
-        "  border-radius: 8px;"
-        "  padding: 6px 18px;"
-        "  font-size: 15px;"
-        "  border: none;"
-        "}"
-        "QPushButton:hover {"
-        "  background-color: #fb8c00;"
-        "}"
+        QString(
+            "QPushButton { background-color: #ffa726; color: white; %1 }"
+            "QPushButton:hover { background-color: #fb8c00; }"
+        ).arg("font-size:16px; font-weight:bold; border-radius:8px; padding:8px 0; border:none;")
+    );
+    recycleBtn = new QPushButton("回收站", this);
+    recycleBtn->setStyleSheet(
+        QString(
+            "QPushButton { background-color: #bdbdbd; color: #263238; %1 }"
+            "QPushButton:hover { background-color: #757575; color: white; }"
+        ).arg("font-size:16px; font-weight:bold; border-radius:8px; padding:8px 0; border:none;")
     );
 
-    recycleBtn->setStyleSheet(
-        "QPushButton {"
-        "  background-color: #bdbdbd;"
-        "  color: #263238;"
-        "  font-weight: bold;"
-        "  border-radius: 8px;"
-        "  padding: 6px 18px;"
-        "  font-size: 15px;"
-        "  border: none;"
-        "}"
-        "QPushButton:hover {"
-        "  background-color: #757575;"
-        "  color: white;"
-        "}"
-    );
+    const int btnHeight = 44;
+    uploadBtn->setMinimumHeight(btnHeight);
+    downloadBtn->setMinimumHeight(btnHeight);
+    listBtn->setMinimumHeight(btnHeight);
+    recycleBtn->setMinimumHeight(btnHeight);
 
     // 进度条
     progressBar = new QProgressBar(this);
@@ -167,8 +130,7 @@ FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
         "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
         "    stop:0 #42a5f5, stop:1 #1976d2);"
         "  border-radius: 8px;"
-        "}"
-    );
+        "}");
     progressBar->setMinimumHeight(22);
 
     // 日志输出框
@@ -182,32 +144,41 @@ FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
         "  border: 2px solid #cfd8dc;"
         "  border-radius: 8px;"
         "  padding: 8px;"
-        "}"
-    );
+        "}");
     logEdit->setMaximumHeight(40); // 或 32、48，按需调整
 
     // 文件列表控件
-    fileListWidget = new QListWidget(this);
+    fileListWidget = new DraggableListWidget(this);
+    static_cast<DraggableListWidget *>(fileListWidget)->setMainWindow(this);
     fileListWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    fileListWidget->setAcceptDrops(true);
+    fileListWidget->setDragDropMode(QAbstractItemView::DropOnly);
 
     // 文件选择区布局
     QHBoxLayout *fileLayout = new QHBoxLayout;
     fileLayout->addWidget(filePathEdit, 3);
     fileLayout->addWidget(browseBtn, 1);
-    fileLayout->addWidget(downloadBtn, 1);
+
+    // 上传/下载按钮同一行
+    QHBoxLayout *uploadLayout = new QHBoxLayout;
+    uploadLayout->addWidget(uploadBtn, 1);
+    uploadLayout->addWidget(downloadBtn, 1);
+
+    // 查看云端/回收站按钮同一行
+    QHBoxLayout *cloudLayout = new QHBoxLayout;
+    cloudLayout->addWidget(listBtn, 1);
+    cloudLayout->addWidget(recycleBtn, 1);
 
     // 主界面布局
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->addWidget(title);
     mainLayout->addSpacing(10);
     mainLayout->addLayout(fileLayout);
-    mainLayout->addWidget(uploadBtn);         // 先上传文件
-    mainLayout->addWidget(uploadFolderBtn);   // 再上传文件夹
-    mainLayout->addWidget(listBtn);
-    mainLayout->addWidget(recycleBtn);
+    mainLayout->addLayout(uploadLayout);
+    mainLayout->addLayout(cloudLayout);
     mainLayout->addWidget(progressBar);
     mainLayout->addWidget(fileListWidget, 2);
-    mainLayout->addWidget(logEdit, 0); // 拉伸因子为0
+    mainLayout->addWidget(logEdit, 0);
     mainLayout->setSpacing(16);
     mainLayout->setContentsMargins(32, 24, 32, 24);
     setLayout(mainLayout);
@@ -219,36 +190,41 @@ FileClientWindow::FileClientWindow(QWidget *parent) : QWidget(parent) {
     connect(downloadBtn, &QPushButton::clicked, this, &FileClientWindow::onDownload);
     connect(recycleBtn, &QPushButton::clicked, this, &FileClientWindow::onRecycle);
 
-    connect(uploadFolderBtn, &QPushButton::clicked, this, &FileClientWindow::onUploadFolder);
-
     connect(fileListWidget, &QListWidget::itemClicked, this, &FileClientWindow::onFileClicked);
     connect(fileListWidget, &QListWidget::customContextMenuRequested, this, &FileClientWindow::onListContextMenu);
+    connect(fileListWidget, &QListWidget::itemDoubleClicked, this, &FileClientWindow::onFileDoubleClicked);
 }
 
 // 浏览按钮槽函数：弹出文件选择对话框
-void FileClientWindow::onBrowse() {
+void FileClientWindow::onBrowse()
+{
     QString file = QFileDialog::getOpenFileName(this, "选择文件");
-    if (!file.isEmpty()) filePathEdit->setText(file);
+    if (!file.isEmpty())
+        filePathEdit->setText(file);
 }
 
 // 上传按钮槽函数：实现文件上传逻辑
-void FileClientWindow::onUpload() {
+void FileClientWindow::onUpload()
+{
     QString filePath = filePathEdit->text();
-    if (filePath.isEmpty()) {
+    if (filePath.isEmpty())
+    {
         QMessageBox::warning(this, "提示", "请选择要上传的文件！");
         return;
     }
     QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
+    if (!file.open(QIODevice::ReadOnly))
+    {
         logEdit->append("文件打开失败: " + filePath);
         return;
     }
     QFileInfo info(filePath);
     qint64 filesize = file.size();
 
-    // 构造protobuf头（包含文件名和大小）
+    // 用相对路径（如果你有目录结构，可以自定义 relPath，否则用文件名）
+    QString relPath = info.fileName(); // 或自定义相对路径
     FileHeader header;
-    header.set_filename(info.fileName().toStdString());
+    header.set_filename(relPath.toStdString());
     header.set_filesize(filesize);
     std::string pb_head;
     header.SerializeToString(&pb_head);
@@ -259,7 +235,8 @@ void FileClientWindow::onUpload() {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(8080);
     inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-    if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
         logEdit->append("连接服务器失败！");
         ::close(sock);
         return;
@@ -275,9 +252,11 @@ void FileClientWindow::onUpload() {
     // 发送文件内容（分块发送，并更新进度条）
     qint64 sent = 0;
     char buf[4096];
-    while (!file.atEnd()) {
+    while (!file.atEnd())
+    {
         qint64 n = file.read(buf, sizeof(buf));
-        if (n > 0) {
+        if (n > 0)
+        {
             send(sock, buf, n, 0);
             sent += n;
             int percent = (filesize > 0) ? (sent * 100 / filesize) : 100;
@@ -289,10 +268,13 @@ void FileClientWindow::onUpload() {
 
     // 等待服务器响应
     char resp[128] = {0};
-    int n = recv(sock, resp, sizeof(resp)-1, 0);
-    if (n > 0) {
+    int n = recv(sock, resp, sizeof(resp) - 1, 0);
+    if (n > 0)
+    {
         logEdit->append("服务器响应: " + QString::fromUtf8(resp));
-    } else {
+    }
+    else
+    {
         logEdit->append("未收到服务器响应！");
     }
     ::close(sock);
@@ -300,7 +282,8 @@ void FileClientWindow::onUpload() {
 }
 
 // 新增：列举按钮槽函数，实现文件列举逻辑
-void FileClientWindow::onList() {
+void FileClientWindow::onList()
+{
     FileHeader header;
     header.set_type(3);
     std::string pb_head;
@@ -311,7 +294,8 @@ void FileClientWindow::onList() {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(8080);
     inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-    if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
         logEdit->append("连接服务器失败！");
         ::close(sock);
         return;
@@ -325,7 +309,8 @@ void FileClientWindow::onList() {
 
     uint32_t resp_len = 0;
     int n = recv(sock, &resp_len, 4, MSG_WAITALL);
-    if (n != 4) {
+    if (n != 4)
+    {
         logEdit->append("未收到服务器响应长度！");
         ::close(sock);
         return;
@@ -333,14 +318,16 @@ void FileClientWindow::onList() {
 
     std::string resp_buf(resp_len, '\0');
     n = recv(sock, &resp_buf[0], resp_len, MSG_WAITALL);
-    if (n != (int)resp_len) {
+    if (n != (int)resp_len)
+    {
         logEdit->append("未收到完整文件列表！");
         ::close(sock);
         return;
     }
 
     ListFilesResponse resp;
-    if (!resp.ParseFromString(resp_buf)) {
+    if (!resp.ParseFromString(resp_buf))
+    {
         logEdit->append("文件列表解析失败！");
         ::close(sock);
         return;
@@ -349,9 +336,11 @@ void FileClientWindow::onList() {
     logEdit->clear();
     logEdit->append("云盘文件列表已刷新。");
     fileListWidget->clear();
-    for (int i = 0; i < resp.filenames_size(); ++i) {
+    for (int i = 0; i < resp.filenames_size(); ++i)
+    {
         QString name = QString::fromStdString(resp.filenames(i));
-        if (!name.startsWith("recycle/")) {
+        if (!name.startsWith("recycle/"))
+        {
             fileListWidget->addItem(name);
         }
     }
@@ -360,9 +349,11 @@ void FileClientWindow::onList() {
 }
 
 // 新增：下载按钮槽函数，实现文件下载逻辑
-void FileClientWindow::onDownload() {
+void FileClientWindow::onDownload()
+{
     QString filename = filePathEdit->text().trimmed();
-    if (filename.isEmpty()) {
+    if (filename.isEmpty())
+    {
         QMessageBox::warning(this, "提示", "请输入要下载的文件名！");
         return;
     }
@@ -380,7 +371,8 @@ void FileClientWindow::onDownload() {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(8080);
     inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-    if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
         logEdit->append("连接服务器失败！");
         ::close(sock);
         return;
@@ -396,7 +388,8 @@ void FileClientWindow::onDownload() {
     // 接收4字节文件长度
     uint32_t file_len = 0;
     int n = recv(sock, &file_len, 4, MSG_WAITALL);
-    if (n != 4) {
+    if (n != 4)
+    {
         logEdit->append("未收到服务器文件长度！");
         ::close(sock);
         return;
@@ -405,9 +398,11 @@ void FileClientWindow::onDownload() {
     // 接收文件内容
     std::vector<char> file_buf(file_len);
     size_t received = 0;
-    while (received < file_len) {
+    while (received < file_len)
+    {
         int chunk = recv(sock, &file_buf[received], file_len - received, 0);
-        if (chunk <= 0) break;
+        if (chunk <= 0)
+            break;
         received += chunk;
         int percent = (file_len > 0) ? (received * 100 / file_len) : 100;
         progressBar->setValue(percent);
@@ -415,16 +410,19 @@ void FileClientWindow::onDownload() {
     }
     ::close(sock);
 
-    if (received != file_len) {
+    if (received != file_len)
+    {
         logEdit->append("文件接收不完整！");
         return;
     }
 
     // 保存为本地文件
     QString savePath = QFileDialog::getSaveFileName(this, "保存文件", filename);
-    if (savePath.isEmpty()) return;
+    if (savePath.isEmpty())
+        return;
     QFile outFile(savePath);
-    if (!outFile.open(QIODevice::WriteOnly)) {
+    if (!outFile.open(QIODevice::WriteOnly))
+    {
         logEdit->append("保存文件失败: " + savePath);
         return;
     }
@@ -435,16 +433,20 @@ void FileClientWindow::onDownload() {
 }
 
 // 文件列表项点击事件：更新文件路径输入框
-void FileClientWindow::onFileClicked(QListWidgetItem *item) {
-    if (item) {
+void FileClientWindow::onFileClicked(QListWidgetItem *item)
+{
+    if (item)
+    {
         filePathEdit->setText(item->text());
     }
 }
 
 // 文件列表右键菜单事件：提供下载、查看、删除等选项
-void FileClientWindow::onListContextMenu(const QPoint &pos) {
+void FileClientWindow::onListContextMenu(const QPoint &pos)
+{
     QListWidgetItem *item = fileListWidget->itemAt(pos);
-    if (!item) return;
+    if (!item)
+        return;
 
     QMenu contextMenu;
     QAction *downloadAction = contextMenu.addAction("下载文件");
@@ -453,9 +455,12 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
     QAction *restoreAction = nullptr;
     QAction *removeAction = nullptr;
 
-    if (!inRecycle) {
+    if (!inRecycle)
+    {
         deleteAction = contextMenu.addAction("删除(移入回收站)");
-    } else {
+    }
+    else
+    {
         restoreAction = contextMenu.addAction("还原");
         removeAction = contextMenu.addAction("彻底删除");
     }
@@ -463,13 +468,18 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
     QAction *selectedAction = contextMenu.exec(fileListWidget->viewport()->mapToGlobal(pos));
     QString filename = item->text();
 
-    if (selectedAction == downloadAction) {
+    if (selectedAction == downloadAction)
+    {
         filePathEdit->setText(filename);
         onDownload();
-    } else if (selectedAction == viewAction) {
+    }
+    else if (selectedAction == viewAction)
+    {
         QString fileUrl = "http://192.168.122.164:8080/files/" + filename;
         QDesktopServices::openUrl(QUrl(fileUrl));
-    } else if (selectedAction == deleteAction) {
+    }
+    else if (selectedAction == deleteAction)
+    {
         // 删除到回收站
         FileHeader header;
         header.set_filename(filename.toStdString());
@@ -482,7 +492,8 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(8080);
         inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-        if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
             logEdit->append("连接服务器失败！");
             ::close(sock);
             return;
@@ -494,15 +505,20 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
         send(sock, pb_head.data(), pb_head.size(), 0);
 
         char resp[128] = {0};
-        int n = recv(sock, resp, sizeof(resp)-1, 0);
-        if (n > 0) {
+        int n = recv(sock, resp, sizeof(resp) - 1, 0);
+        if (n > 0)
+        {
             logEdit->append("服务器响应: " + QString::fromUtf8(resp));
-        } else {
+        }
+        else
+        {
             logEdit->append("未收到服务器响应！");
         }
         ::close(sock);
         onList();
-    } else if (selectedAction == restoreAction) {
+    }
+    else if (selectedAction == restoreAction)
+    {
         // 还原
         FileHeader header;
         header.set_filename(filename.toStdString());
@@ -515,7 +531,8 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(8080);
         inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-        if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
             logEdit->append("连接服务器失败！");
             ::close(sock);
             return;
@@ -527,15 +544,20 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
         send(sock, pb_head.data(), pb_head.size(), 0);
 
         char resp[128] = {0};
-        int n = recv(sock, resp, sizeof(resp)-1, 0);
-        if (n > 0) {
+        int n = recv(sock, resp, sizeof(resp) - 1, 0);
+        if (n > 0)
+        {
             logEdit->append("服务器响应: " + QString::fromUtf8(resp));
-        } else {
+        }
+        else
+        {
             logEdit->append("未收到服务器响应！");
         }
         ::close(sock);
         onRecycle();
-    } else if (selectedAction == removeAction) {
+    }
+    else if (selectedAction == removeAction)
+    {
         // 彻底删除
         FileHeader header;
         header.set_filename(filename.toStdString());
@@ -548,7 +570,8 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(8080);
         inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-        if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
             logEdit->append("连接服务器失败！");
             ::close(sock);
             return;
@@ -560,10 +583,13 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
         send(sock, pb_head.data(), pb_head.size(), 0);
 
         char resp[128] = {0};
-        int n = recv(sock, resp, sizeof(resp)-1, 0);
-        if (n > 0) {
+        int n = recv(sock, resp, sizeof(resp) - 1, 0);
+        if (n > 0)
+        {
             logEdit->append("服务器响应: " + QString::fromUtf8(resp));
-        } else {
+        }
+        else
+        {
             logEdit->append("未收到服务器响应！");
         }
         ::close(sock);
@@ -572,21 +598,26 @@ void FileClientWindow::onListContextMenu(const QPoint &pos) {
 }
 
 // 上传文件夹按钮槽函数
-void FileClientWindow::onUploadFolder() {
-    QString dirPath = QFileDialog::getExistingDirectory(this, "选择要上传的文件夹");
-    if (dirPath.isEmpty()) return;
-    uploadDirectory(dirPath, dirPath);
-    logEdit->append("文件夹上传完成: " + dirPath);
-}
+// void FileClientWindow::onUploadFolder() {
+//     QString dirPath = QFileDialog::getExistingDirectory(this, "选择要上传的文件夹");
+//     if (dirPath.isEmpty()) return;
+//     uploadDirectory(dirPath, dirPath);
+//     logEdit->append("文件夹上传完成: " + dirPath);
+// }
 
 // 递归上传目录下所有文件
-void FileClientWindow::uploadDirectory(const QString &rootDir, const QString &currentDir) {
+void FileClientWindow::uploadDirectory(const QString &rootDir, const QString &currentDir)
+{
     QDir dir(currentDir);
     QFileInfoList fileList = dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot | QDir::AllDirs, QDir::DirsFirst);
-    for (const QFileInfo &info : fileList) {
-        if (info.isDir()) {
+    for (const QFileInfo &info : fileList)
+    {
+        if (info.isDir())
+        {
             uploadDirectory(rootDir, info.absoluteFilePath());
-        } else if (info.isFile()) {
+        }
+        else if (info.isFile())
+        {
             QString relPath = QDir(rootDir).relativeFilePath(info.absoluteFilePath());
             uploadFileWithRelativePath(info.absoluteFilePath(), relPath);
         }
@@ -594,9 +625,11 @@ void FileClientWindow::uploadDirectory(const QString &rootDir, const QString &cu
 }
 
 // 上传单个文件，filename字段为相对路径
-void FileClientWindow::uploadFileWithRelativePath(const QString &absPath, const QString &relPath) {
+void FileClientWindow::uploadFileWithRelativePath(const QString &absPath, const QString &relPath)
+{
     QFile file(absPath);
-    if (!file.open(QIODevice::ReadOnly)) {
+    if (!file.open(QIODevice::ReadOnly))
+    {
         logEdit->append("文件打开失败: " + absPath);
         return;
     }
@@ -613,7 +646,8 @@ void FileClientWindow::uploadFileWithRelativePath(const QString &absPath, const 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(8080);
     inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-    if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
         logEdit->append("连接服务器失败！");
         ::close(sock);
         return;
@@ -626,26 +660,32 @@ void FileClientWindow::uploadFileWithRelativePath(const QString &absPath, const 
     send(sock, pb_head.data(), pb_head.size(), 0);
 
     char buf[4096];
-    while (!file.atEnd()) {
+    while (!file.atEnd())
+    {
         qint64 n = file.read(buf, sizeof(buf));
-        if (n > 0) {
+        if (n > 0)
+        {
             send(sock, buf, n, 0);
         }
     }
     file.close();
 
     char resp[128] = {0};
-    int n = recv(sock, resp, sizeof(resp)-1, 0);
-    if (n > 0) {
+    int n = recv(sock, resp, sizeof(resp) - 1, 0);
+    if (n > 0)
+    {
         logEdit->append("上传: " + relPath + " -> " + QString::fromUtf8(resp));
-    } else {
+    }
+    else
+    {
         logEdit->append("上传: " + relPath + " 未收到服务器响应！");
     }
     ::close(sock);
 }
 
 // 新增：回收站按钮槽函数，实现回收站文件列举逻辑
-void FileClientWindow::onRecycle() {
+void FileClientWindow::onRecycle()
+{
     FileHeader header;
     header.set_type(5);
     std::string pb_head;
@@ -656,7 +696,8 @@ void FileClientWindow::onRecycle() {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(8080);
     inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
-    if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
         logEdit->append("连接服务器失败！");
         ::close(sock);
         return;
@@ -670,7 +711,8 @@ void FileClientWindow::onRecycle() {
 
     uint32_t resp_len = 0;
     int n = recv(sock, &resp_len, 4, MSG_WAITALL);
-    if (n != 4) {
+    if (n != 4)
+    {
         logEdit->append("未收到服务器响应长度！");
         ::close(sock);
         return;
@@ -678,14 +720,16 @@ void FileClientWindow::onRecycle() {
 
     std::string resp_buf(resp_len, '\0');
     n = recv(sock, &resp_buf[0], resp_len, MSG_WAITALL);
-    if (n != (int)resp_len) {
+    if (n != (int)resp_len)
+    {
         logEdit->append("未收到完整回收站列表！");
         ::close(sock);
         return;
     }
 
     ListFilesResponse resp;
-    if (!resp.ParseFromString(resp_buf)) {
+    if (!resp.ParseFromString(resp_buf))
+    {
         logEdit->append("回收站列表解析失败！");
         ::close(sock);
         return;
@@ -694,13 +738,63 @@ void FileClientWindow::onRecycle() {
     fileListWidget->clear();
     logEdit->clear();
     logEdit->append("回收站文件列表已刷新。");
-    for (int i = 0; i < resp.filenames_size(); ++i) {
+    for (int i = 0; i < resp.filenames_size(); ++i)
+    {
         QString name = QString::fromStdString(resp.filenames(i));
-        if (name.startsWith("recycle/")) {
+        if (name.startsWith("recycle/"))
+        {
             name = name.mid(QString("recycle/").size());
             fileListWidget->addItem(name);
         }
     }
     ::close(sock);
     inRecycle = true; // 标记为回收站模式
+}
+
+// 文件列表双击事件：打开文件
+void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
+{
+    if (!item)
+        return;
+    QString filename = item->text();
+    if (inRecycle)
+        filename = "recycle/" + filename;
+
+    // 1. 发送 type=8 请求到服务端，获取 presigned url
+    FileHeader header;
+    header.set_filename(filename.toStdString());
+    header.set_type(8); // 8 表示获取外链
+    std::string pb_head;
+    header.SerializeToString(&pb_head);
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in serv_addr{};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(8080);
+    inet_pton(AF_INET, "192.168.122.164", &serv_addr.sin_addr);
+    if (::connect(sock, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
+        logEdit->append("连接服务器失败！");
+        ::close(sock);
+        return;
+    }
+    uint32_t pb_len = pb_head.size();
+    char len_buf[4];
+    memcpy(len_buf, &pb_len, 4);
+    send(sock, len_buf, 4, 0);
+    send(sock, pb_head.data(), pb_head.size(), 0);
+
+    // 2. 接收 presigned url
+    char url_buf[2048] = {0};
+    int n = recv(sock, url_buf, sizeof(url_buf) - 1, 0);
+    ::close(sock);
+    if (n <= 0)
+    {
+        logEdit->append("未收到外链！");
+        return;
+    }
+    QString presignedUrl = QString::fromUtf8(url_buf);
+
+    // 3. 用浏览器打开外链
+    QDesktopServices::openUrl(QUrl(presignedUrl));
 }

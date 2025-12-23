@@ -10,7 +10,7 @@
 #include "../../proto/file.pb.h"  // 路径按实际调整
 
 int main() {
-    const char* server_ip = "192.168.122.164";
+    const char* server_ip = "10.20.32.88";
     int server_port = 8080;
     std::string filename;
 

@@ -7,6 +7,41 @@
 #include <fstream>
 #include <cstdio>
 
+namespace {
+
+// 每次处理完一个请求后统一重置（保持你现有“一个连接处理一个请求”的方式）
+static inline void resetState_(bool &pb_head_parsed,
+                               uint32_t &pb_head_len,
+                               std::string &pb_head_buf,
+                               std::string &filename,
+                               uint64_t &file_size,
+                               uint64_t &received,
+                               bool &receiving,
+                               std::ofstream &outfile)
+{
+    pb_head_parsed = false;
+    pb_head_len = 0;
+    pb_head_buf.clear();
+    filename.clear();
+    file_size = 0;
+    received = 0;
+
+    if (outfile.is_open())
+        outfile.close();
+    receiving = false;
+}
+
+// 下载失败时不要直接发 ERROR 文本（会让客户端把前4字节当长度读，导致“长度异常/乱码”）
+// 统一为：先发4字节 0，再发错误文本
+static inline void sendLen0Error_(const TcpConnectionPtr &conn, const std::string &msg)
+{
+    uint32_t len = 0;
+    conn->send(std::string(reinterpret_cast<const char *>(&len), 4));
+    conn->send(std::string("ERROR: ") + msg + "\n");
+}
+
+} // namespace
+
 FileServer::FileServer(EventLoop *loop, const InetAddress &addr, const std::string &name)
     : server_(loop, addr, name), loop_(loop)
 {
@@ -36,21 +71,13 @@ void FileServer::onConnection(const TcpConnectionPtr &conn)
 {
     if (!conn->connected())
     {
-        // 连接断开，清理状态
-        if (outfile_.is_open())
-            outfile_.close();
-        receiving_ = false;
-        file_size_ = 0;
-        received_ = 0;
-        filename_.clear();
-        pb_head_parsed_ = false;
-        pb_head_len_ = 0;
-        pb_head_buf_.clear();
+        resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
         std::cout << "Connection closed." << std::endl;
     }
     else
     {
-        // 新连接建立
+        // 新连接建立也重置一次，避免上次连接遗留状态污染
+        resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
         std::cout << "New connection from " << conn->peerAddress().toIpPort() << std::endl;
     }
 }
@@ -60,9 +87,9 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
 {
     while (buf->readableBytes() > 0)
     {
+        // ===== 1) 解析 protobuf 头 =====
         if (!pb_head_parsed_)
         {
-            // 先收4字节长度
             if (pb_head_len_ == 0)
             {
                 if (buf->readableBytes() < 4)
@@ -70,33 +97,38 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 memcpy(&pb_head_len_, buf->peek(), 4);
                 buf->retrieve(4);
             }
-            // 再收protobuf头
+
             if (buf->readableBytes() < pb_head_len_)
                 return;
+
             pb_head_buf_.assign(buf->peek(), pb_head_len_);
             buf->retrieve(pb_head_len_);
 
-            // 反序列化
             FileHeader header;
             if (!header.ParseFromString(pb_head_buf_))
             {
                 conn->send(std::string("ERROR: Protobuf parse failed\n"));
                 conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
+
             filename_ = header.filename();
             file_size_ = header.filesize();
             pb_head_parsed_ = true;
 
-            // ====== 列举文件 ======
+            // ===== 2) 按 type 分发 =====
+
+            // 列举云端文件
             if (header.type() == 3)
-            { // type=3 表示列举
+            {
                 std::vector<std::string> files;
                 if (minio_ && minio_->listObjects(files))
                 {
                     ListFilesResponse resp;
                     for (const auto &f : files)
                         resp.add_filenames(f);
+
                     std::string out;
                     resp.SerializeToString(&out);
 
@@ -106,44 +138,43 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 }
                 else
                 {
-                    conn->send(std::string("ERROR: List files failed\n"));
+                    // 列表接口目前客户端按 [len][pb] 读，这里也按统一格式返回错误（len=0 + 文本）
+                    sendLen0Error_(conn, "List files failed");
                 }
-                // 重置状态
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
 
-            // ====== 下载文件 ======
+            // 下载文件（统一改成失败也先发 len）
             if (header.type() == 2)
-            { // type=2 表示下载
+            {
                 std::string tmp_path = "/tmp/" + filename_;
                 bool ok = minio_ && minio_->download(filename_, tmp_path);
                 if (!ok)
                 {
-                    conn->send(std::string("ERROR: Download from Minio failed\n"));
+                    sendLen0Error_(conn, "Download from Minio failed");
                     conn->shutdown();
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                     return;
                 }
+
                 std::ifstream infile(tmp_path, std::ios::binary | std::ios::ate);
                 if (!infile)
                 {
-                    conn->send(std::string("ERROR: Cannot open downloaded file\n"));
+                    sendLen0Error_(conn, "Cannot open downloaded file");
                     conn->shutdown();
+                    std::remove(tmp_path.c_str());
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                     return;
                 }
+
                 std::streamsize filesize = infile.tellg();
                 infile.seekg(0, std::ios::beg);
 
-                // 发送4字节文件长度
                 uint32_t len = static_cast<uint32_t>(filesize);
                 conn->send(std::string(reinterpret_cast<const char *>(&len), 4));
 
-                // 分块发送文件内容
                 char buf4k[4096];
                 while (infile)
                 {
@@ -152,55 +183,40 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     if (n > 0)
                         conn->send(std::string(buf4k, static_cast<size_t>(n)));
                 }
+
                 infile.close();
                 std::remove(tmp_path.c_str());
                 conn->shutdown();
-                // 重置状态
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
 
-            // ====== 删除（移入回收站） ======
+            // 删除（移入回收站）
             if (header.type() == 4)
-            { // type=4 表示删除到回收站
+            {
                 std::string recycle_name = std::string("recycle/") + filename_;
                 bool ok = false;
                 if (minio_)
                 {
-                    // 先拷贝到 recycle/ 前缀，再删除原对象
                     ok = minio_->copyObject(filename_, recycle_name) && minio_->remove(filename_);
                 }
-                if (ok)
-                {
-                    conn->send(std::string("DELETE OK\n"));
-                }
-                else
-                {
-                    conn->send(std::string("ERROR: Delete to recycle failed\n"));
-                }
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+                conn->send(ok ? std::string("DELETE OK\n") : std::string("ERROR: Delete to recycle failed\n"));
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
 
-            // ====== 列举回收站 ======
+            // 列举回收站
             if (header.type() == 5)
-            { // type=5 表示列举回收站
+            {
                 std::vector<std::string> files;
                 if (minio_ && minio_->listObjectsWithPrefix("recycle/", files))
                 {
                     ListFilesResponse resp;
                     for (const auto &f : files)
                         resp.add_filenames(f);
+
                     std::string out;
                     resp.SerializeToString(&out);
 
@@ -210,21 +226,16 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 }
                 else
                 {
-                    conn->send(std::string("ERROR: List recycle failed\n"));
+                    sendLen0Error_(conn, "List recycle failed");
                 }
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
 
-            // ====== 还原回收站文件 ======
+            // 还原回收站文件
             if (header.type() == 6)
-            { // type=6 表示还原
-                // 如果 extra 字段提供原始路径则使用，否则把文件名直接还原到根目录
+            {
                 std::string origin_name = header.extra().empty() ? filename_ : header.extra();
                 std::string recycle_name = std::string("recycle/") + filename_;
                 bool ok = false;
@@ -232,93 +243,57 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 {
                     ok = minio_->copyObject(recycle_name, origin_name) && minio_->remove(recycle_name);
                 }
-                if (ok)
-                {
-                    conn->send(std::string("RESTORE OK\n"));
-                }
-                else
-                {
-                    conn->send(std::string("ERROR: Restore failed\n"));
-                }
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
-                return;
-            }
-            
-            // ====== 生成 presigned URL ======
-            if (header.type() == 8)
-            { // type=8 表示生成外链
-                std::string url;
-                if (minio_)
-                {
-                    url = minio_->presignedUrl(filename_, 3600); // 1小时有效
-                }
-                if (!url.empty())
-                {
-                    conn->send(url);
-                }
-                else
-                {
-                    conn->send(std::string("ERROR: Presigned URL failed\n"));
-                }
-                // 重置状态
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+                conn->send(ok ? std::string("RESTORE OK\n") : std::string("ERROR: Restore failed\n"));
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
 
-            // ====== 彻底删除回收站文件 ======
+            // 彻底删除回收站文件
             if (header.type() == 7)
-            { // type=7 表示彻底删除
+            {
                 std::string recycle_name = std::string("recycle/") + filename_;
                 bool ok = minio_ && minio_->remove(recycle_name);
-                if (ok)
-                {
-                    conn->send(std::string("REMOVE OK\n"));
-                }
-                else
-                {
-                    conn->send(std::string("ERROR: Remove failed\n"));
-                }
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+                conn->send(ok ? std::string("REMOVE OK\n") : std::string("ERROR: Remove failed\n"));
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
 
-            // ====== 上传文件（原有逻辑） ======
+            // 生成 presigned URL（文本返回）
+            if (header.type() == 8)
+            {
+                std::string url;
+                if (minio_)
+                    url = minio_->presignedUrl(filename_, 3600);
+
+                conn->send(!url.empty() ? url : std::string("ERROR: Presigned URL failed\n"));
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
+
+            // ===== 3) 默认当上传处理 =====
             outfile_.open(filename_, std::ios::binary);
             if (!outfile_)
             {
                 conn->send(std::string("ERROR: Cannot open file\n"));
                 conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
+
             receiving_ = true;
             received_ = 0;
             std::cout << "Start receiving file: " << filename_ << ", size: " << file_size_ << std::endl;
 
-            // === 处理空文件 ===
+            // 空文件：直接完成并上传到 MinIO
             if (file_size_ == 0)
             {
                 outfile_.close();
                 receiving_ = false;
                 conn->send(std::string("UPLOAD OK\n"));
-                std::cout << std::endl
-                          << "File received: " << filename_ << std::endl;
 
-                // 上传到 Minio
                 if (minio_ && minio_->upload(filename_, filename_))
                 {
                     std::cout << "Upload to Minio success: " << filename_ << std::endl;
@@ -328,25 +303,20 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 {
                     std::cerr << "Upload to Minio failed: " << filename_ << std::endl;
                 }
-                // 重置状态
-                pb_head_parsed_ = false;
-                pb_head_len_ = 0;
-                pb_head_buf_.clear();
-                filename_.clear();
-                file_size_ = 0;
-                received_ = 0;
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
         }
+        // ===== 4) 接收上传内容 =====
         else if (receiving_)
         {
-            // 正在接收文件内容
             size_t to_write = std::min(static_cast<uint64_t>(buf->readableBytes()), file_size_ - received_);
             outfile_.write(buf->peek(), to_write);
             buf->retrieve(to_write);
             received_ += to_write;
 
-            double percent = 100.0 * received_ / file_size_;
+            double percent = file_size_ ? (100.0 * received_ / file_size_) : 100.0;
             std::cout << "\r接收进度: " << received_ << "/" << file_size_
                       << " 字节 (" << std::fixed << std::setprecision(2) << percent << "%)" << std::flush;
 
@@ -355,8 +325,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 outfile_.close();
                 receiving_ = false;
                 conn->send(std::string("UPLOAD OK\n"));
-                std::cout << std::endl
-                          << "File received: " << filename_ << std::endl;
+                std::cout << std::endl << "File received: " << filename_ << std::endl;
 
                 if (minio_ && minio_->upload(filename_, filename_))
                 {
@@ -367,6 +336,9 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 {
                     std::cerr << "Upload to Minio failed: " << filename_ << std::endl;
                 }
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
             }
         }
         else

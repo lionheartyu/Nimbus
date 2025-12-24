@@ -1,4 +1,3 @@
-#include "server/server.h"
 #include "server/file_server.h"
 #include <aws/core/Aws.h>
 
@@ -9,7 +8,7 @@ int main() {
     {
         // 文件传输服务器 3线程
         EventLoop loop;
-        InetAddress addr(8080, "192.168.122.164");
+        InetAddress addr(8080, "10.20.32.88");
         FileServer server(&loop, addr, "file-server");
         server.start();
         loop.loop();

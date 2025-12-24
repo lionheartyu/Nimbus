@@ -30,17 +30,11 @@ find_package(Qt5 REQUIRED COMPONENTS Widgets)
 # 定义服务器可执行文件及其源文件
 add_executable(nimbus_server
     main.cpp
-    server/server.cpp
     server/file_server.cpp
     storage/minio_storage.cpp
     ../proto/file.pb.cc
 )
 
-# 定义客户端可执行文件
-add_executable(file_client
-    client/file_client.cpp
-    ../proto/file.pb.cc
-)
 
 # 定义 Windows 客户端可执行文件
 add_executable(file_client_windows
@@ -54,9 +48,7 @@ add_executable(file_client_windows
 set_target_properties(nimbus_server PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/n_server_target
 )
-set_target_properties(file_client PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/n_client_target
-)
+
 set_target_properties(file_client_windows PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/n_client_target
 )
@@ -66,11 +58,6 @@ target_link_libraries(nimbus_server
     pthread
     ${Protobuf_LIBRARIES}
     ${AWSSDK_LINK_LIBRARIES}  # AWS S3 SDK
-)
-
-target_link_libraries(file_client
-    pthread
-    ${Protobuf_LIBRARIES}
 )
 
 target_link_libraries(file_client_windows

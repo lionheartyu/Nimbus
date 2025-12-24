@@ -90,3 +90,10 @@ OSS，Object Storage Service，对象存储服务
 - 多个 MinIO 节点组成分布式集群，节点间通过网络通信，实现数据冗余和高可用。
 - 数据和元数据分布在所有节点的本地磁盘上，MinIO 使用 Erasure Coding 技术保证数据安全。
 - 整个集群对外表现为一个统一的 S3 兼容存储服务。
+
+
+
+启动MinIO
+export MINIO_ROOT_USER=minioadmin
+export MINIO_ROOT_PASSWORD=minioadmin
+minio server ~/minio/data --console-address ":9001"

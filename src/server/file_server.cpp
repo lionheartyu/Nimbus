@@ -6,8 +6,15 @@
 #include <vector>
 #include <fstream>
 #include <cstdio>
+#include <csignal> // add
 
 namespace {
+
+// 忽略 SIGPIPE：防止客户端提前断开导致服务端进程退出
+struct IgnoreSigPipe_ {
+    IgnoreSigPipe_() { ::signal(SIGPIPE, SIG_IGN); }
+};
+static IgnoreSigPipe_ g_ignore_sigpipe;
 
 // 每次处理完一个请求后统一重置（保持你现有“一个连接处理一个请求”的方式）
 static inline void resetState_(bool &pb_head_parsed,
@@ -49,16 +56,15 @@ FileServer::FileServer(EventLoop *loop, const InetAddress &addr, const std::stri
     server_.setConnectionCallback(std::bind(&FileServer::onConnection, this, std::placeholders::_1));
     // 设置消息到达时的回调
     server_.setMessageCallback(std::bind(&FileServer::onMessage, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-    // 设置工作线程数量
-    server_.setThreadNum(3);
 
-    // 初始化 MinioStorage（参数请根据你的实际配置填写）
+    // 重要：你现在解析/上传状态是成员变量（跨连接共享），多线程会串状态导致乱码/协议错位
+    server_.setThreadNum(1);
+
     minio_ = std::make_unique<MinioStorage>(
-        "127.0.0.1:9000", // MinIO endpoint
-        "minioadmin",     // Access Key
-        "minioadmin",     // Secret Key
-        "data"            // Bucket name
-    );
+        "127.0.0.1:9000",
+        "minioadmin",
+        "minioadmin",
+        "data");
 }
 
 void FileServer::start()
@@ -87,9 +93,9 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
 {
     while (buf->readableBytes() > 0)
     {
-        // ===== 1) 解析 protobuf 头 =====
         if (!pb_head_parsed_)
         {
+            // ===== 1) 解析 protobuf 头 =====
             if (pb_head_len_ == 0)
             {
                 if (buf->readableBytes() < 4)
@@ -178,6 +184,8 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 char buf4k[4096];
                 while (infile)
                 {
+                    if (!conn->connected()) break; // 关键：对端断了就别再 send
+
                     infile.read(buf4k, sizeof(buf4k));
                     std::streamsize n = infile.gcount();
                     if (n > 0)
@@ -186,7 +194,9 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
 
                 infile.close();
                 std::remove(tmp_path.c_str());
-                conn->shutdown();
+
+                if (conn->connected())
+                    conn->shutdown();
 
                 resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
@@ -268,6 +278,88 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     url = minio_->presignedUrl(filename_, 3600);
 
                 conn->send(!url.empty() ? url : std::string("ERROR: Presigned URL failed\n"));
+
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
+
+            // ====== 新增：type=9 预览下载（小文件：图片/文本）======
+            if (header.type() == 9)
+            {
+                // extra 可选：客户端可以传一个最大字节数
+                // 若 proto 没有 extra 字段或客户端没传也无所谓
+                uint64_t max_bytes = 2u * 1024u * 1024u; // 默认 2MB（图片/文本足够）
+                if (!header.extra().empty())
+                {
+                    try { max_bytes = std::stoull(header.extra()); } catch (...) {}
+                }
+
+                std::string tmp_path = "/tmp/" + filename_;
+                bool ok = minio_ && minio_->download(filename_, tmp_path);
+                if (!ok)
+                {
+                    sendLen0Error_(conn, "Preview download from Minio failed");
+                    conn->shutdown();
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                    return;
+                }
+
+                std::ifstream infile(tmp_path, std::ios::binary | std::ios::ate);
+                if (!infile)
+                {
+                    sendLen0Error_(conn, "Cannot open preview temp file");
+                    conn->shutdown();
+                    std::remove(tmp_path.c_str());
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                    return;
+                }
+
+                std::streamsize filesize = infile.tellg();
+                infile.seekg(0, std::ios::beg);
+
+                if (filesize < 0)
+                {
+                    sendLen0Error_(conn, "Invalid preview file size");
+                    conn->shutdown();
+                    infile.close();
+                    std::remove(tmp_path.c_str());
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                    return;
+                }
+
+                if (static_cast<uint64_t>(filesize) > max_bytes)
+                {
+                    sendLen0Error_(conn, "Preview too large");
+                    conn->shutdown();
+                    infile.close();
+                    std::remove(tmp_path.c_str());
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                    return;
+                }
+
+                uint32_t len = static_cast<uint32_t>(filesize);
+                conn->send(std::string(reinterpret_cast<const char *>(&len), 4));
+
+                std::string data;
+                data.resize(len);
+                if (len > 0)
+                {
+                    infile.read(&data[0], len);
+                    if (!infile)
+                    {
+                        sendLen0Error_(conn, "Preview read failed");
+                        conn->shutdown();
+                        infile.close();
+                        std::remove(tmp_path.c_str());
+                        resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                        return;
+                    }
+                    conn->send(data);
+                }
+
+                infile.close();
+                std::remove(tmp_path.c_str());
+                conn->shutdown();
 
                 resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;

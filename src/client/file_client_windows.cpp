@@ -25,7 +25,8 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
-
+#include <QMediaPlayer>   
+#include <QVideoWidget>   
 #include "../../proto/file.pb.h"
 
 #include <algorithm>
@@ -34,6 +35,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
+#include <QUuid> // add
 
 namespace {
 
@@ -46,6 +48,9 @@ constexpr int kSockTimeoutSecTransfer = 2 * 60 * 60; // 2小时（按你网络�
 constexpr uint32_t kMaxListResponseBytes = 8u * 1024u * 1024u;     // 8MB 足够装文件名列表
 constexpr uint32_t kMaxDownloadBytes     = 1024u * 1024u * 1024u;  // 1GB（按需调整）
 
+constexpr qint64 kChunkThreshold = 5ll * 1024 * 1024 * 1024; // 5GB
+constexpr qint64 kChunkSize      = 64ll * 1024 * 1024;       // 64MB
+
 bool setSocketTimeouts(int sock, int seconds)
 {
     timeval tv{};
@@ -53,7 +58,7 @@ bool setSocketTimeouts(int sock, int seconds)
     tv.tv_usec = 0;
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) return false;
     if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) return false;
-    return true;
+    return true; 
 }
 
 // 处理短写
@@ -169,6 +174,12 @@ static inline bool isTextExt_(const QString& ext)
     return exts.contains(ext);
 }
 
+static inline bool isVideoExt_(const QString& ext)
+{
+    static const QStringList exts = {"mp4","mkv","webm","flv","avi","mov","wmv","mpg","mpeg"};
+    return exts.contains(ext);
+}
+
 static inline QString recvErrorTextAfterLen0_(int sock)
 {
     // 最多读 64KB 错误文本
@@ -254,6 +265,11 @@ static void runBusyWithProgress_(QWidget* parent,
     });
 
     watcher->setFuture(QtConcurrent::run(std::forward<Fn>(worker)));
+}
+
+static inline QString makeUploadId_()
+{
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
 }  // namespace
@@ -486,10 +502,115 @@ void FileClientWindow::onUpload()
         return;
     }
 
-    const QFileInfo info(filePath);
+    QFileInfo info(filePath);
     const qint64 filesize = file.size();
-
     const QString relPath = info.fileName();
+
+    // ===== 5GB+ 分片上传（选A：最后一片触发合并并上传）=====
+    if (filesize >= kChunkThreshold)
+    {
+        const QString uploadId = makeUploadId_();
+        const qint64 total = (filesize + kChunkSize - 1) / kChunkSize;
+
+        logEdit->append(QString("大文件分片上传: %1, size=%2, chunks=%3, uploadId=%4")
+                            .arg(relPath)
+                            .arg(filesize)
+                            .arg(total)
+                            .arg(uploadId));
+
+        for (qint64 idx = 0; idx < total; ++idx)
+        {
+            const qint64 offset = idx * kChunkSize;
+            const qint64 thisSize = std::min(kChunkSize, filesize - offset);
+
+            if (!file.seek(offset))
+            {
+                logEdit->append("分片 seek 失败");
+                return;
+            }
+
+            // 注意：这里为了兼容服务端“最小实现（要求一片一次性到齐）”，我们一次 read 一片到内存并一次 sendAll 发完。
+            // 64MB 一片通常可接受；如果你机器内存紧张，可把服务端改成“保存分片接收状态”后再做流式读写。
+            QByteArray chunk = file.read(thisSize);
+            if (chunk.size() != thisSize)
+            {
+                logEdit->append("分片读取失败");
+                return;
+            }
+
+            FileHeader header;
+            header.set_type(10);
+            header.set_filename(relPath.toStdString());
+            header.set_filesize(static_cast<uint64_t>(thisSize));
+
+            const std::string extra =
+                "uploadId=" + uploadId.toStdString() +
+                ";index=" + std::to_string(idx) +
+                ";total=" + std::to_string(total) +
+                ";full=" + std::to_string(static_cast<uint64_t>(filesize)) +
+                ";chunk=" + std::to_string(static_cast<uint64_t>(thisSize));
+
+            header.set_extra(extra);
+
+            std::string pb_head;
+            header.SerializeToString(&pb_head);
+
+            int sock = -1;
+            if (!connectToServer(sock, "10.20.32.88", 8080, kSockTimeoutSecTransfer))
+            {
+                logEdit->append("连接服务器失败（分片）");
+                return;
+            }
+
+            if (!sendPbHeader(sock, pb_head))
+            {
+                logEdit->append("发送分片头失败");
+                ::close(sock);
+                return;
+            }
+
+            if (!sendAll(sock, chunk.data(), static_cast<size_t>(chunk.size())))
+            {
+                logEdit->append("发送分片数据失败");
+                ::close(sock);
+                return;
+            }
+
+            char resp[256] = {0};
+            const int rn = ::recv(sock, resp, sizeof(resp) - 1, 0);
+            ::close(sock);
+
+            const QString respText = (rn > 0) ? QString::fromUtf8(resp, rn).trimmed() : QString();
+            if (idx + 1 < total)
+            {
+                if (!respText.startsWith("CHUNK OK"))
+                {
+                    logEdit->append("分片上传失败: " + respText);
+                    return;
+                }
+            }
+            else
+            {
+                // 最后一片：服务端会合并并上传，返回 UPLOAD OK（或 ERROR）
+                if (!respText.startsWith("UPLOAD OK"))
+                {
+                    logEdit->append("合并/上传失败: " + respText);
+                    return;
+                }
+            }
+
+            const int percent = static_cast<int>(((idx + 1) * 100) / total);
+            progressBar->setValue(percent);
+            QCoreApplication::processEvents();
+        }
+
+        QMessageBox::information(this, "上传成功", "大文件分片上传完成：\n" + relPath);
+        progressBar->setValue(100);
+        if (!inRecycle) QTimer::singleShot(200, this, &FileClientWindow::onList);
+        return;
+    }
+
+    // ===== 小文件：走你原来的直传逻辑（不改）=====
     FileHeader header;
     header.set_filename(relPath.toStdString());
     header.set_filesize(filesize);
@@ -1293,7 +1414,128 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem* item)
         return;
     }
 
-    // ===== 2) 其它类型：走 type=8 外链，用浏览器/系统打开 =====
+    // ===== 视频：走 type=8 拿到外链，然后用 Qt 内置播放器在线播放 =====
+    if (isVideoExt_(ext))
+    {
+        auto* dlg = new QProgressDialog("正在生成视频播放链接…", QString(), 0, 0, this);
+        dlg->setWindowTitle("视频预览");
+        dlg->setWindowModality(Qt::ApplicationModal);
+        dlg->setCancelButton(nullptr);
+        dlg->setMinimumDuration(0);
+        dlg->setAutoClose(false);
+        dlg->setAutoReset(false);
+        dlg->show();
+
+        struct Result {
+            bool ok = false;
+            QString url;
+            QString err;
+        };
+
+        const QString filenameCopy = filename;
+        auto* watcher = new QFutureWatcher<Result>(this);
+
+        auto future = QtConcurrent::run([filenameCopy]() -> Result {
+            Result r;
+
+            FileHeader header;
+            header.set_filename(filenameCopy.toStdString());
+            header.set_type(8);
+
+            std::string pb_head;
+            header.SerializeToString(&pb_head);
+
+            int sock = -1;
+            if (!connectToServer(sock, "10.20.32.88", 8080))
+            {
+                r.err = "连接服务器失败！";
+                return r;
+            }
+
+            if (!sendPbHeader(sock, pb_head))
+            {
+                r.err = "发送外链请求失败！";
+                ::close(sock);
+                return r;
+            }
+
+            std::string url;
+            url.reserve(2048);
+            char b[1024];
+            for (;;)
+            {
+                const ssize_t n = ::recv(sock, b, sizeof(b), 0);
+                if (n > 0) { url.append(b, b + n); continue; }
+                break;
+            }
+            ::close(sock);
+
+            const QString presignedUrl = QString::fromUtf8(url.data(), static_cast<int>(url.size())).trimmed();
+            if (presignedUrl.isEmpty())
+            {
+                r.err = "未收到外链！";
+                return r;
+            }
+            if (presignedUrl.startsWith("ERROR", Qt::CaseInsensitive))
+            {
+                r.err = presignedUrl;
+                return r;
+            }
+
+            r.ok = true;
+            r.url = presignedUrl;
+            return r;
+        });
+
+        connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, dlg, filenameCopy]() {
+            dlg->close();
+            dlg->deleteLater();
+
+            const Result r = watcher->result();
+            watcher->deleteLater();
+
+            if (!r.ok)
+            {
+                logEdit->append("视频预览失败: " + r.err);
+                return;
+            }
+
+            // Qt 视频播放窗口
+            auto* w = new QDialog(this);
+            w->setAttribute(Qt::WA_DeleteOnClose, true);
+            w->setWindowTitle("视频预览 - " + filenameCopy);
+            w->resize(980, 640);
+
+            auto* video = new QVideoWidget(w);
+            video->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            auto* player = new QMediaPlayer(w);
+            auto* audio  = new QAudioOutput(w);
+            player->setAudioOutput(audio);
+            player->setVideoOutput(video);
+            player->setSource(QUrl(r.url));
+            audio->setVolume(1.0);
+#else
+            auto* player = new QMediaPlayer(w);
+            player->setVideoOutput(video);
+            player->setMedia(QUrl(r.url));
+#endif
+
+            auto* layout = new QVBoxLayout(w);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->addWidget(video);
+            w->setLayout(layout);
+
+            w->show();
+            player->play();
+        });
+
+        watcher->setFuture(future);
+        return;
+    }
+
+    // ===== 其它类型：保持你原来的 type=8 外链用系统打开 =====
     {
         auto* dlg = new QProgressDialog("正在生成查看链接…", QString(), 0, 0, this);
         dlg->setWindowTitle("查看文件");

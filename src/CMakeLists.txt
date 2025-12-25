@@ -25,7 +25,7 @@ message(STATUS "Using protobuf ${Protobuf_VERSION}")
 # AWS SDK for C++ (S3)
 find_package(AWSSDK REQUIRED COMPONENTS s3)
 
-find_package(Qt5 REQUIRED COMPONENTS Widgets)
+find_package(Qt5 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Concurrent)
 
 # 定义服务器可执行文件及其源文件
 add_executable(nimbus_server
@@ -62,6 +62,9 @@ target_link_libraries(nimbus_server
 
 target_link_libraries(file_client_windows
     Qt5::Widgets
+    Qt5::Multimedia
+    Qt5::MultimediaWidgets
+    Qt5::Concurrent
     pthread
     ${Protobuf_LIBRARIES}
 )

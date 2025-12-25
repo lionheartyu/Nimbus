@@ -38,7 +38,9 @@
 namespace {
 
 // 避免 UI 卡死：给 socket 设置读写超时（秒）
-constexpr int kSockTimeoutSec = 10;
+// 原来是 10 秒，5GB+ 上传必然触发 SO_SNDTIMEO 超时 -> sendAll 失败
+constexpr int kSockTimeoutSecShort    = 10;
+constexpr int kSockTimeoutSecTransfer = 2 * 60 * 60; // 2小时（按你网络情况可再调大）
 
 // 防止服务端/网络异常导致分配超大内存或一直等
 constexpr uint32_t kMaxListResponseBytes = 8u * 1024u * 1024u;     // 8MB 足够装文件名列表
@@ -108,12 +110,12 @@ bool recvAll(int sock, void* data, size_t len)
     return true;
 }
 
-bool connectToServer(int& sock, const char* ip, uint16_t port)
+bool connectToServer(int& sock, const char* ip, uint16_t port, int timeoutSec)
 {
     sock = ::socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return false;
 
-    setSocketTimeouts(sock, kSockTimeoutSec);
+    setSocketTimeouts(sock, timeoutSec);
 
     sockaddr_in serv_addr{};
     serv_addr.sin_family = AF_INET;
@@ -133,6 +135,12 @@ bool connectToServer(int& sock, const char* ip, uint16_t port)
         return false;
     }
     return true;
+}
+
+// 保留原函数：默认短超时（列表/删除/外链/预览等）
+bool connectToServer(int& sock, const char* ip, uint16_t port)
+{
+    return connectToServer(sock, ip, port, kSockTimeoutSecShort);
 }
 
 bool sendPbHeader(int sock, const std::string& pb)
@@ -490,7 +498,8 @@ void FileClientWindow::onUpload()
     header.SerializeToString(&pb_head);
 
     int sock = -1;
-    if (!connectToServer(sock, "10.20.32.88", 8080))
+    // 关键：上传用长超时（否则 5GB+ 极易触发 SO_SNDTIMEO 超时）
+    if (!connectToServer(sock, "10.20.32.88", 8080, kSockTimeoutSecTransfer))
     {
         logEdit->append("连接服务器失败！");
         return;
@@ -998,50 +1007,53 @@ void FileClientWindow::uploadFileWithRelativePath(const QString& absPath, const 
     std::string pb_head;
     header.SerializeToString(&pb_head);
 
-    int sock = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in serv_addr{};
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(8080);
-    inet_pton(AF_INET, "10.20.32.88", &serv_addr.sin_addr);
-
-    if (::connect(sock, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0)
+    int sock = -1;
+    // 关键：目录/拖拽上传也要长超时
+    if (!connectToServer(sock, "10.20.32.88", 8080, kSockTimeoutSecTransfer))
     {
         logEdit->append("连接服务器失败！");
+        return;
+    }
+
+    // 关键：统一用 sendPbHeader + sendAll，避免短写
+    if (!sendPbHeader(sock, pb_head))
+    {
+        logEdit->append("发送上传头失败（可能超时/断开）！");
         ::close(sock);
         return;
     }
 
-    const uint32_t pb_len = static_cast<uint32_t>(pb_head.size());
-    char len_buf[4];
-    memcpy(len_buf, &pb_len, 4);
+    std::vector<char> buf(64 * 1024);
+    qint64 sent = 0;
 
-    send(sock, len_buf, 4, 0);
-    send(sock, pb_head.data(), pb_head.size(), 0);
-
-    char buf[4096];
     while (!file.atEnd())
     {
-        const qint64 n = file.read(buf, sizeof(buf));
+        const qint64 n = file.read(buf.data(), static_cast<qint64>(buf.size()));
         if (n > 0)
         {
-            send(sock, buf, n, 0);
+            if (!sendAll(sock, buf.data(), static_cast<size_t>(n)))
+            {
+                logEdit->append("上传中断（可能超时/断开）: " + relPath);
+                ::close(sock);
+                return;
+            }
+            sent += n;
+
+            const int percent = (filesize > 0) ? static_cast<int>((sent * 100) / filesize) : 100;
+            progressBar->setValue(percent);
+            QCoreApplication::processEvents();
         }
     }
     file.close();
 
     char resp[128] = {0};
-    const int n = recv(sock, resp, sizeof(resp) - 1, 0);
+    const int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
+    ::close(sock);
 
     if (n > 0)
-    {
-        logEdit->append("上传: " + relPath + " -> " + QString::fromUtf8(resp));
-    }
+        logEdit->append("上传: " + relPath + " -> " + QString::fromUtf8(resp, n).trimmed());
     else
-    {
         logEdit->append("上传: " + relPath + " 未收到服务器响应！");
-    }
-
-    ::close(sock);
 }
 
 // 新增：回收站按钮槽函数，实现回收站文件列举逻辑

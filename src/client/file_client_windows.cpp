@@ -272,6 +272,12 @@ static inline QString makeUploadId_()
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
+static inline std::string tokenExtra_(const QString& token)
+{
+    if (token.trimmed().isEmpty()) return std::string();
+    return "token=" + token.toStdString();
+}
+
 }  // namespace
 
 // 构造函数：初始化界面和控件
@@ -543,7 +549,10 @@ void FileClientWindow::onUpload()
             header.set_filename(relPath.toStdString());
             header.set_filesize(static_cast<uint64_t>(thisSize));
 
+            // extra: token=...;uploadId=...;index=...;...
+            const std::string base = tokenExtra_(token_);
             const std::string extra =
+                (base.empty() ? "" : (base + ";")) +
                 "uploadId=" + uploadId.toStdString() +
                 ";index=" + std::to_string(idx) +
                 ";total=" + std::to_string(total) +
@@ -610,10 +619,11 @@ void FileClientWindow::onUpload()
         return;
     }
 
-    // ===== 小文件：走你原来的直传逻辑（不改）=====
+    // ===== 小文件：走你原来的直传逻辑（加 token）=====
     FileHeader header;
     header.set_filename(relPath.toStdString());
     header.set_filesize(filesize);
+    header.set_extra(tokenExtra_(token_)); // add
 
     std::string pb_head;
     header.SerializeToString(&pb_head);
@@ -691,6 +701,7 @@ void FileClientWindow::onList()
 {
     FileHeader header;
     header.set_type(3);
+    header.set_extra(tokenExtra_(token_)); // add
 
     std::string pb_head;
     header.SerializeToString(&pb_head);
@@ -781,6 +792,7 @@ void FileClientWindow::onDownload()
     FileHeader header;
     header.set_filename(filename.toStdString());
     header.set_type(2);
+    header.set_extra(tokenExtra_(token_)); // add
 
     std::string pb_head;
     header.SerializeToString(&pb_head);
@@ -930,17 +942,22 @@ void FileClientWindow::onListContextMenu(const QPoint& pos)
     }
 
     QAction* selectedAction = contextMenu.exec(fileListWidget->viewport()->mapToGlobal(pos));
-    const QString filename = item->text();
+    const QString filenameShown = item->text();
+
+    // 关键修复：在回收站模式下，请求里的 filename 必须带 recycle/ 前缀，
+    // 否则服务端会找错对象（可能导致“还原后名字变了/变成重复文件名”等问题）
+    const QString filenameForReq = inRecycle ? ("recycle/" + filenameShown) : filenameShown;
 
     if (selectedAction == downloadAction)
     {
-        filePathEdit->setText(filename);
+        filePathEdit->setText(filenameForReq);
         onDownload();
         return;
     }
 
     if (selectedAction == viewAction)
     {
+        // 双击查看里会自己处理 recycle/ 前缀，你这里也直接走双击逻辑即可
         onFileDoubleClicked(item);
         return;
     }
@@ -949,7 +966,7 @@ void FileClientWindow::onListContextMenu(const QPoint& pos)
     auto runOpWithProgress_ = [this](const QString& title,
                                     const QString& text,
                                     int type,
-                                    const QString& filenameForReq,
+                                    const QString& filenameForReqInner,
                                     std::function<void(const QString& resp)> onSuccess) {
         auto* dlg = new QProgressDialog(text, QString(), 0, 0, this);
         dlg->setWindowTitle(title);
@@ -967,14 +984,15 @@ void FileClientWindow::onListContextMenu(const QPoint& pos)
         };
 
         auto* watcher = new QFutureWatcher<Result>(this);
-        const QString nameCopy = filenameForReq;
+        const QString nameCopy = filenameForReqInner;
 
-        auto future = QtConcurrent::run([nameCopy, type]() -> Result {
+        auto future = QtConcurrent::run([nameCopy, type, tokenCopy = token_]() -> Result {
             Result r;
 
             FileHeader header;
             header.set_filename(nameCopy.toStdString());
             header.set_type(type);
+            header.set_extra(tokenExtra_(tokenCopy)); // add
 
             std::string pb_head;
             header.SerializeToString(&pb_head);
@@ -1044,14 +1062,13 @@ void FileClientWindow::onListContextMenu(const QPoint& pos)
 
     if (selectedAction == deleteAction)
     {
-        const QString filenameForReq = filename; // 非回收站：原样
         runOpWithProgress_(
             "删除文件",
             "正在删除并移入回收站…",
             4,
             filenameForReq,
-            [this, filename](const QString&) {
-                QMessageBox::information(this, "删除完成", "删除成功：\n" + filename);
+            [this, filenameShown](const QString&) {
+                QMessageBox::information(this, "删除完成", "删除成功：\n" + filenameShown);
                 onList();
             });
         return;
@@ -1059,14 +1076,13 @@ void FileClientWindow::onListContextMenu(const QPoint& pos)
 
     if (selectedAction == restoreAction)
     {
-        const QString filenameForReq = filename;
         runOpWithProgress_(
             "还原文件",
             "正在还原…",
             6,
-            filenameForReq,
-            [this, filename](const QString&) {
-                QMessageBox::information(this, "还原完成", "还原成功：\n" + filename);
+            filenameForReq, // fix: 使用带 recycle/ 前缀的路径
+            [this, filenameShown](const QString&) {
+                QMessageBox::information(this, "还原完成", "还原成功：\n" + filenameShown);
                 onRecycle();
             });
         return;
@@ -1074,14 +1090,13 @@ void FileClientWindow::onListContextMenu(const QPoint& pos)
 
     if (selectedAction == removeAction)
     {
-        const QString filenameForReq = filename; // 回收站：type=7
         runOpWithProgress_(
             "彻底删除",
             "正在彻底删除…",
             7,
-            filenameForReq,
-            [this, filename](const QString&) {
-                QMessageBox::information(this, "删除完成", "已彻底删除：\n" + filename);
+            filenameForReq, // fix: 使用带 recycle/ 前缀的路径
+            [this, filenameShown](const QString&) {
+                QMessageBox::information(this, "删除完成", "已彻底删除：\n" + filenameShown);
                 onRecycle();
             });
         return;
@@ -1182,6 +1197,7 @@ void FileClientWindow::onRecycle()
 {
     FileHeader header;
     header.set_type(5);
+    header.set_extra(tokenExtra_(token_)); // add
 
     std::string pb_head;
     header.SerializeToString(&pb_head);
@@ -1250,6 +1266,8 @@ void FileClientWindow::onRecycle()
         QString name = QString::fromStdString(resp.filenames(i));
         if (name.startsWith("recycle/"))
         {
+            // 修复：列表里显示的名字要保持服务端“完整相对路径”，不要只取最后一段
+            // 原逻辑可能把路径/文件名处理错，导致还原/删除后看起来“文件名变了”
             name = name.mid(QString("recycle/").size());
             fileListWidget->addItem(name);
         }
@@ -1293,13 +1311,16 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem* item)
         const QString filenameCopy = filename;
         const QString extCopy = ext;
 
-        auto future = QtConcurrent::run([filenameCopy]() -> Result {
+        // 预览 type=9（原本 extra 放 max bytes，改成 token + max）
+        auto future = QtConcurrent::run([filenameCopy, tokenCopy = token_]() -> Result {
             Result r;
 
             FileHeader header;
             header.set_filename(filenameCopy.toStdString());
             header.set_type(9);
-            header.set_extra("2097152"); // 2MB 上限（服务端会校验）
+
+            const std::string base = tokenExtra_(tokenCopy);
+            header.set_extra((base.empty() ? "" : (base + ";")) + std::string("max=2097152"));
 
             std::string pb_head;
             header.SerializeToString(&pb_head);
@@ -1435,12 +1456,14 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem* item)
         const QString filenameCopy = filename;
         auto* watcher = new QFutureWatcher<Result>(this);
 
-        auto future = QtConcurrent::run([filenameCopy]() -> Result {
+        // 外链 type=8
+        auto future = QtConcurrent::run([filenameCopy, tokenCopy = token_]() -> Result {
             Result r;
 
             FileHeader header;
             header.set_filename(filenameCopy.toStdString());
             header.set_type(8);
+            header.set_extra(tokenExtra_(tokenCopy)); // fix: 其它类型也要带 token
 
             std::string pb_head;
             header.SerializeToString(&pb_head);
@@ -1500,9 +1523,10 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem* item)
                 return;
             }
 
-            // Qt 视频播放窗口
-            auto* w = new QDialog(this);
+            // Qt 视频播放窗口（独立关闭不影响主窗口）
+            auto* w = new QDialog(nullptr); // 不以 main window 作为 parent，避免级联销毁/关闭逻辑
             w->setAttribute(Qt::WA_DeleteOnClose, true);
+            w->setAttribute(Qt::WA_QuitOnClose, false); // 关键：关闭这个窗口不要退出整个应用
             w->setWindowTitle("视频预览 - " + filenameCopy);
             w->resize(980, 640);
 
@@ -1510,16 +1534,30 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem* item)
             video->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-            auto* player = new QMediaPlayer(w);
-            auto* audio  = new QAudioOutput(w);
+            auto* player = new QMediaPlayer(nullptr);
+            auto* audio  = new QAudioOutput(nullptr);
+
             player->setAudioOutput(audio);
             player->setVideoOutput(video);
             player->setSource(QUrl(r.url));
             audio->setVolume(1.0);
+
+            // 关键：在窗口关闭(accept/reject)时先 stop + 断开 video output，再 deleteLater
+            QObject::connect(w, &QDialog::finished, w, [player, audio]() {
+                player->stop();
+                player->setVideoOutput(nullptr);
+                player->deleteLater();
+                audio->deleteLater();
+            });
 #else
-            auto* player = new QMediaPlayer(w);
+            auto* player = new QMediaPlayer(nullptr);
             player->setVideoOutput(video);
-            player->setMedia(QUrl(r.url));
+            player->setMedia(QMediaContent(QUrl(r.url)));
+
+            QObject::connect(w, &QDialog::finished, w, [player]() {
+                player->stop();
+                player->deleteLater();
+            });
 #endif
 
             auto* layout = new QVBoxLayout(w);
@@ -1556,12 +1594,14 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem* item)
 
         const QString filenameCopy = filename;
 
-        auto future = QtConcurrent::run([filenameCopy]() -> Result {
+        // fix: 这里之前没带 token，导致 ERROR: Unauthorized
+        auto future = QtConcurrent::run([filenameCopy, tokenCopy = token_]() -> Result {
             Result r;
 
             FileHeader header;
             header.set_filename(filenameCopy.toStdString());
             header.set_type(8);
+            header.set_extra(tokenExtra_(tokenCopy)); // add token
 
             std::string pb_head;
             header.SerializeToString(&pb_head);

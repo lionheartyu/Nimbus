@@ -12,7 +12,10 @@
 #include <unistd.h>
 #include <cerrno>
 #include <thread>   // add: async delete/restore/remove
-
+#include <mysql/mysql.h>
+#include <openssl/sha.h>
+#include <random>
+#include <sstream>
 namespace {
 
 // 忽略 SIGPIPE：防止客户端提前断开导致服务端进程退出
@@ -193,6 +196,233 @@ static void cleanupSession_(const std::string& sessionDir, const std::string& me
     ::rmdir(sessionDir.c_str());
 }
 
+static inline std::string getKv_(const std::string& extra, const std::string& key)
+{
+    // 解析 "token=xx;max=123" / "a=1;token=xx"
+    const std::string k = key + "=";
+    size_t p = extra.find(k);
+    if (p == std::string::npos) return "";
+    p += k.size();
+    size_t e = extra.find(';', p);
+    return extra.substr(p, (e == std::string::npos) ? std::string::npos : (e - p));
+}
+
+static inline std::string genUuid_()
+{
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    auto hex = [](uint64_t x, int n) {
+        std::ostringstream os;
+        os << std::hex << std::setfill('0') << std::nouppercase;
+        os << std::setw(n) << (x & ((1ULL << (n * 4)) - 1));
+        return os.str();
+    };
+
+    const uint64_t a = rng();
+    const uint64_t b = rng();
+    return hex(a >> 32, 8) + "-" + hex(a >> 16, 4) + "-" + hex(a, 4) + "-" + hex(b >> 48, 4) + "-" + hex(b, 12);
+}
+
+static inline std::vector<unsigned char> sha256_(const std::vector<unsigned char>& data)
+{
+    std::vector<unsigned char> out(SHA256_DIGEST_LENGTH);
+    SHA256_CTX ctx{};
+    SHA256_Init(&ctx);
+    SHA256_Update(&ctx, data.data(), data.size());
+    SHA256_Final(out.data(), &ctx);
+    return out;
+}
+
+static inline std::vector<unsigned char> randomBytes_(size_t n)
+{
+    std::vector<unsigned char> b(n);
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> dist(0, 255);
+    for (size_t i = 0; i < n; ++i) b[i] = static_cast<unsigned char>(dist(rng));
+    return b;
+}
+
+static inline std::string toHex_(const std::vector<unsigned char>& b)
+{
+    std::ostringstream os;
+    os << std::hex << std::setfill('0');
+    for (unsigned char c : b) os << std::setw(2) << (int)c;
+    return os.str();
+}
+
+static inline std::vector<unsigned char> hexToBytes_(const std::string& hx)
+{
+    std::vector<unsigned char> b;
+    if (hx.size() % 2) return b;
+    b.reserve(hx.size() / 2);
+    for (size_t i = 0; i < hx.size(); i += 2)
+    {
+        unsigned int v = 0;
+        std::stringstream ss;
+        ss << std::hex << hx.substr(i, 2);
+        ss >> v;
+        b.push_back(static_cast<unsigned char>(v));
+    }
+    return b;
+}
+
+struct DbCfg {
+    std::string host = "127.0.0.1";
+    unsigned int port = 3306;
+    std::string user = "nimbus_user";
+    std::string pass = "Nimbus@123456";
+    std::string db   = "nimbus";
+};
+
+static MYSQL* mysqlConnect_(const DbCfg& cfg)
+{
+    MYSQL* m = mysql_init(nullptr);
+    if (!m) return nullptr;
+    mysql_options(m, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+    if (!mysql_real_connect(m, cfg.host.c_str(), cfg.user.c_str(), cfg.pass.c_str(), cfg.db.c_str(), cfg.port, nullptr, 0))
+    {
+        // 关键：把失败原因打出来，方便你排查
+        std::cerr << "[MySQL] connect failed: " << mysql_error(m) << std::endl;
+        mysql_close(m);
+        return nullptr;
+    }
+    return m;
+}
+
+static std::string escape_(MYSQL* m, const std::string& s)
+{
+    std::string out;
+    out.resize(s.size() * 2 + 1);
+
+    // C++14: std::string::data() 返回 const char*，mysql_real_escape_string 需要 char*
+    unsigned long n = 0;
+    if (!out.empty())
+    {
+        n = mysql_real_escape_string(
+            m,
+            &out[0],                 // <- fix
+            s.c_str(),
+            static_cast<unsigned long>(s.size()));
+    }
+
+    out.resize(n);
+    return out;
+}
+
+static bool dbRegister_(const DbCfg& cfg, const std::string& username, const std::string& password, std::string& err)
+{
+    MYSQL* m = mysqlConnect_(cfg);
+    if (!m) { err = "DB connect failed"; return false; }
+
+    const auto salt = randomBytes_(16);
+    std::vector<unsigned char> concat;
+    concat.insert(concat.end(), salt.begin(), salt.end());
+    concat.insert(concat.end(), password.begin(), password.end());
+    const auto hash = sha256_(concat);
+
+    const std::string u = escape_(m, username);
+    const std::string sql =
+        "INSERT INTO users(username, password_hash, salt) VALUES('" + u + "', UNHEX('" + toHex_(hash) + "'), UNHEX('" + toHex_(salt) + "'))";
+
+    if (mysql_query(m, sql.c_str()) != 0)
+    {
+        const unsigned int ec = mysql_errno(m);
+        err = (ec == 1062) ? "Username exists" : mysql_error(m);
+        mysql_close(m);
+        return false;
+    }
+
+    mysql_close(m);
+    return true;
+}
+
+static bool dbLogin_(const DbCfg& cfg, const std::string& username, const std::string& password, std::string& tokenOut, std::string& err)
+{
+    MYSQL* m = mysqlConnect_(cfg);
+    if (!m) { err = "DB connect failed"; return false; }
+
+    const std::string u = escape_(m, username);
+    const std::string q = "SELECT id, HEX(password_hash), HEX(salt) FROM users WHERE username='" + u + "' LIMIT 1";
+    if (mysql_query(m, q.c_str()) != 0)
+    {
+        err = mysql_error(m);
+        mysql_close(m);
+        return false;
+    }
+
+    MYSQL_RES* res = mysql_store_result(m);
+    if (!res) { err = mysql_error(m); mysql_close(m); return false; }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (!row)
+    {
+        mysql_free_result(res);
+        mysql_close(m);
+        err = "Invalid username or password";
+        return false;
+    }
+
+    const long long userId = std::stoll(row[0]);
+    const std::string hashHex = row[1] ? row[1] : "";
+    const std::string saltHex = row[2] ? row[2] : "";
+    mysql_free_result(res);
+
+    const auto salt = hexToBytes_(saltHex);
+    const auto stored = hexToBytes_(hashHex);
+
+    std::vector<unsigned char> concat;
+    concat.insert(concat.end(), salt.begin(), salt.end());
+    concat.insert(concat.end(), password.begin(), password.end());
+    const auto calc = sha256_(concat);
+
+    if (calc != stored)
+    {
+        mysql_close(m);
+        err = "Invalid username or password";
+        return false;
+    }
+
+    const std::string token = genUuid_();
+    const std::string sql =
+        "INSERT INTO sessions(token, user_id) VALUES('" + escape_(m, token) + "', " + std::to_string(userId) + ")";
+
+    if (mysql_query(m, sql.c_str()) != 0)
+    {
+        err = mysql_error(m);
+        mysql_close(m);
+        return false;
+    }
+
+    mysql_close(m);
+    tokenOut = token;
+    return true;
+}
+
+static bool dbCheckToken_(const DbCfg& cfg, const std::string& token)
+{
+    if (token.empty()) return false;
+
+    MYSQL* m = mysqlConnect_(cfg);
+    if (!m) return false;
+
+    const std::string t = escape_(m, token);
+    const std::string q = "SELECT user_id FROM sessions WHERE token='" + t + "' LIMIT 1";
+    if (mysql_query(m, q.c_str()) != 0)
+    {
+        mysql_close(m);
+        return false;
+    }
+
+    MYSQL_RES* res = mysql_store_result(m);
+    if (!res) { mysql_close(m); return false; }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    const bool ok = (row != nullptr);
+
+    mysql_free_result(res);
+    mysql_close(m);
+    return ok;
+}
+
 } // namespace
 
 FileServer::FileServer(EventLoop *loop, const InetAddress &addr, const std::string &name)
@@ -204,7 +434,7 @@ FileServer::FileServer(EventLoop *loop, const InetAddress &addr, const std::stri
     server_.setMessageCallback(std::bind(&FileServer::onMessage, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     // fix: 你当前解析/上传状态是成员变量（跨连接共享），多线程必串状态导致随机失败（还原/上传/删除都会“偶现失败”）
-    server_.setThreadNum(1);
+    server_.setThreadNum(5);
 
     minio_ = std::make_unique<MinioStorage>(
         "127.0.0.1:9000",
@@ -268,6 +498,66 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             filename_ = head.filename();
             file_size_ = head.filesize();
             pb_head_parsed_ = true;
+
+            // ===== Auth / MySQL =====
+            static DbCfg g_db; // TODO: 改成配置读取
+
+            if (head.type() == 12) // 注册：filename=username, extra=password
+            {
+                std::string err;
+                if (head.filename().empty() || head.extra().empty())
+                {
+                    conn->send(std::string("ERROR: Empty username/password\n"));
+                }
+                else if (dbRegister_(g_db, head.filename(), head.extra(), err))
+                {
+                    conn->send(std::string("REGISTER OK\n"));
+                }
+                else
+                {
+                    conn->send(std::string("ERROR: ") + err + "\n");
+                }
+
+                conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
+
+            if (head.type() == 11) // 登录：filename=username, extra=password
+            {
+                std::string token, err;
+                if (head.filename().empty() || head.extra().empty())
+                {
+                    conn->send(std::string("ERROR: Empty username/password\n"));
+                }
+                else if (dbLogin_(g_db, head.filename(), head.extra(), token, err))
+                {
+                    conn->send(std::string("LOGIN OK token=") + token + "\n");
+                }
+                else
+                {
+                    conn->send(std::string("ERROR: ") + err + "\n");
+                }
+
+                conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
+
+            // 其余所有操作：必须带 token=xxx（在 extra 里）
+            const std::string token = getKv_(head.extra(), "token");
+            if (!dbCheckToken_(g_db, token))
+            {
+                // list/recycle/download/preview 走 [len][payload] 协议，要发 len=0
+                if (head.type() == 2 || head.type() == 3 || head.type() == 5 || head.type() == 9)
+                    sendLen0Error_(conn, "Unauthorized");
+                else
+                    conn->send(std::string("ERROR: Unauthorized\n"));
+
+                conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
 
             // ===== 2) 按 type 分发 =====
 
@@ -393,15 +683,17 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 还原回收站文件 —— fix: 同样先回 OK 再后台 copy/remove（避免大文件还原超时）
+            // 还原回收站文件 —— fix: 你客户端发来的 filename_ 已经是 "recycle/xxx"
+            // 你这里又拼了一次 recycle/，导致变成 "recycle/recycle/xxx" -> copy/remove 都失败
             if (head.type() == 6)
             {
-                std::string origin_name = head.extra().empty() ? filename_ : head.extra();
-                // 防御：不允许还原目标仍在 recycle/ 下
+                // filename_ 期望是：recycle/<path>
+                const std::string recycle_name = filename_;
+
+                // 还原目标：默认去掉 recycle/ 前缀
+                std::string origin_name = recycle_name;
                 if (origin_name.rfind("recycle/", 0) == 0)
                     origin_name = origin_name.substr(std::string("recycle/").size());
-
-                const std::string recycle_name = std::string("recycle/") + filename_;
 
                 conn->send(std::string("RESTORE OK\n"));
                 conn->shutdown();
@@ -416,10 +708,11 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 彻底删除回收站文件 —— fix: 先回 OK 再后台 remove（避免大文件删除超时）
+            // 彻底删除回收站文件 —— fix: 同样不要再拼 recycle/ 前缀
             if (head.type() == 7)
             {
-                const std::string recycle_name = std::string("recycle/") + filename_;
+                // filename_ 期望是：recycle/<path>
+                const std::string recycle_name = filename_;
 
                 conn->send(std::string("REMOVE OK\n"));
                 conn->shutdown();
@@ -450,12 +743,19 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             // ====== 新增：type=9 预览下载（小文件：图片/文本）======
             if (head.type() == 9)
             {
-                // extra 可选：客户端可以传一个最大字节数
-                // 若 proto 没有 extra 字段或客户端没传也无所谓
-                uint64_t max_bytes = 2u * 1024u * 1024u; // 默认 2MB（图片/文本足够）
+                uint64_t max_bytes = 2u * 1024u * 1024u; // 默认 2MB
                 if (!head.extra().empty())
                 {
-                    try { max_bytes = std::stoull(head.extra()); } catch (...) {}
+                    const std::string mx = getKv_(head.extra(), "max");
+                    if (!mx.empty())
+                    {
+                        try { max_bytes = std::stoull(mx); } catch (...) {}
+                    }
+                    else
+                    {
+                        // 兼容旧客户端：extra 直接是数字
+                        try { max_bytes = std::stoull(head.extra()); } catch (...) {}
+                    }
                 }
 
                 std::string tmp_path = "/tmp/" + filename_;

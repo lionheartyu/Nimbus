@@ -3,8 +3,8 @@ syntax = "proto3";
 message FileHeader {
   string filename = 1;
   uint64 filesize = 2;
-  int32 type = 3; // 1=上传，2=下载，3=列举，4=删除，5=列举回收站，6=还原，7=彻底删除
-  string extra = 4; // 可选，扩展用（如回收站操作时原路径等）
+  int32 type = 3; // 1=上传，2=下载，3=列举，4=删除，5=列举回收站，6=还原，7=彻底删除, 11=登录, 12=注册
+  string extra = 4; // 扩展：token=xxx;uploadId=... 等
 }
 
 message ListFilesResponse {

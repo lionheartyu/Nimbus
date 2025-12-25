@@ -4,28 +4,45 @@ project(NimbusServer)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_AUTOMOC ON)
 
-# 增加 proto 目录和 minio/aws 头文件目录
 include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/proto
     /usr/include/mymuduo
-    # AWS SDK include path（如有需要可加）
-    # /usr/local/include
 )
 
 link_directories(
     /usr/lib
-    # /usr/local/lib  # 如果aws-sdk-cpp安装在这里
 )
 
-# Protobuf
 find_package(Protobuf REQUIRED)
 message(STATUS "Using protobuf ${Protobuf_VERSION}")
 
-# AWS SDK for C++ (S3)
 find_package(AWSSDK REQUIRED COMPONENTS s3)
 
 find_package(Qt5 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Concurrent)
+
+# ===== MySQL + OpenSSL（给服务端登录/注册用）=====
+find_package(OpenSSL REQUIRED)
+
+# Ubuntu/Debian 的 libmysqlclient-dev 通常不带 CMake config，用 Find 兜底
+find_path(MYSQL_INCLUDE_DIR
+    NAMES mysql/mysql.h
+    PATHS /usr/include /usr/local/include
+)
+
+find_library(MYSQL_LIBRARY
+    NAMES mysqlclient
+    PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib
+)
+
+if(NOT MYSQL_INCLUDE_DIR OR NOT MYSQL_LIBRARY)
+    message(FATAL_ERROR "MySQL client library not found. Install: sudo apt install -y libmysqlclient-dev")
+endif()
+
+message(STATUS "MySQL include: ${MYSQL_INCLUDE_DIR}")
+message(STATUS "MySQL library: ${MYSQL_LIBRARY}")
+
+include_directories(${MYSQL_INCLUDE_DIR})
 
 # 定义服务器可执行文件及其源文件
 add_executable(nimbus_server
@@ -35,11 +52,12 @@ add_executable(nimbus_server
     ../proto/file.pb.cc
 )
 
-
-# 定义 Windows 客户端可执行文件
+# 定义 Windows 客户端可执行文件（Qt）
 add_executable(file_client_windows
     client/file_client_windows.cpp
     client/draggable_listwidget.cpp
+    client/login_dialog.cpp
+    client/register_dialog.cpp
     client/main.cpp
     ../proto/file.pb.cc
 )
@@ -57,7 +75,10 @@ target_link_libraries(nimbus_server
     mymuduo
     pthread
     ${Protobuf_LIBRARIES}
-    ${AWSSDK_LINK_LIBRARIES}  # AWS S3 SDK
+    ${AWSSDK_LINK_LIBRARIES}
+    ${MYSQL_LIBRARY}
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 target_link_libraries(file_client_windows

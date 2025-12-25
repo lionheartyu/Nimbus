@@ -1,4 +1,5 @@
 #pragma once
+
 #include <QWidget>
 #include <QLineEdit>
 #include <QPushButton>
@@ -6,13 +7,16 @@
 #include <QTextEdit>
 #include <QThread>
 #include <QListWidget> // 新增
+#include <QString>
 
-class FileClientWindow : public QWidget {
+class FileClientWindow : public QWidget
+{
     Q_OBJECT
 public:
-    FileClientWindow(QWidget *parent = nullptr);
+    explicit FileClientWindow(QWidget* parent = nullptr);
 
-    // 让这三个成员 public
+    void setToken(const QString& token) { token_ = token; }
+
     QTextEdit *logEdit;
     void uploadDirectory(const QString &rootDir, const QString &currentDir);
     void uploadFileWithRelativePath(const QString &absPath, const QString &relPath);
@@ -28,6 +32,8 @@ private slots:
     void onRecycle();
 
 private:
+    QString token_;
+
     QLineEdit *filePathEdit;
     QPushButton *browseBtn;
     QPushButton *uploadBtn;

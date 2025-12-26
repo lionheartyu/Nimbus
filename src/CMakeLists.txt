@@ -48,6 +48,9 @@ include_directories(${MYSQL_INCLUDE_DIR})
 add_executable(nimbus_server
     main.cpp
     server/file_server.cpp
+    server/file_server_util.cpp
+    server/file_server_chunk.cpp
+    server/file_server_db.cpp
     storage/minio_storage.cpp
     ../proto/file.pb.cc
 )

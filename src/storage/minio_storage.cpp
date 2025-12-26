@@ -22,6 +22,7 @@
 #include <sstream>
 
 // 工具函数：百分号编码 UTF-8 字节流
+// S3 只允许部分字符，其它字符都需要编码
 static std::string urlEncodeAllBytes_(const std::string& s)
 {
     std::ostringstream os;
@@ -142,8 +143,10 @@ bool MinioStorage::listObjectsWithPrefix(const std::string& prefix, std::vector<
 }
 
 // 新增：对象拷贝（修复 CopySource 需要 URL encode）
+// 支持大文件分片拷贝
 bool MinioStorage::copyObject(const std::string& src, const std::string& dst)
 {
+    // 先获取源对象大小
     Aws::S3::Model::HeadObjectRequest headReq;
     headReq.SetBucket(bucket_);
     headReq.SetKey(src.c_str());
@@ -254,6 +257,9 @@ bool MinioStorage::copyObject(const std::string& src, const std::string& dst)
 }
 
 // 新增：生成预签名 URL
+// @param objectName 对象名
+// @param expireSeconds 过期秒数
+// @return 预签名URL字符串，失败返回空
 std::string MinioStorage::presignedUrl(const std::string& objectName, int expireSeconds) {
     Aws::S3::Model::GetObjectRequest request;
     request.SetBucket(bucket_);

@@ -2,13 +2,46 @@
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentials.h>
 #include <aws/core/client/ClientConfiguration.h>
+#include <aws/core/utils/StringUtils.h>
+#include <aws/core/utils/HashingUtils.h>
 #include <aws/s3/model/PutObjectRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/DeleteObjectRequest.h>
 #include <aws/s3/model/ListObjectsV2Request.h>
 #include <aws/s3/model/CopyObjectRequest.h>
+#include <aws/s3/model/CreateMultipartUploadRequest.h>
+#include <aws/s3/model/UploadPartCopyRequest.h>
+#include <aws/s3/model/CompleteMultipartUploadRequest.h>
+#include <aws/s3/model/CompletedMultipartUpload.h>
+#include <aws/s3/model/CompletedPart.h>
+#include <aws/s3/model/HeadObjectRequest.h>
+#include <aws/s3/model/AbortMultipartUploadRequest.h>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
+#include <sstream>
+
+// 工具函数：百分号编码 UTF-8 字节流
+static std::string urlEncodeAllBytes_(const std::string& s)
+{
+    std::ostringstream os;
+    for (unsigned char c : s)
+    {
+        // S3 允许的字符：A-Z a-z 0-9 - _ . ~ /  其它都要编码
+        if ((c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~' || c == '/')
+        {
+            os << c;
+        }
+        else
+        {
+            os << '%' << std::uppercase << std::setw(2) << std::setfill('0') << std::hex << (int)c;
+        }
+    }
+    return os.str();
+}
 
 // 构造函数，初始化 Minio/S3 客户端
 MinioStorage::MinioStorage(const std::string& endpoint,
@@ -108,16 +141,116 @@ bool MinioStorage::listObjectsWithPrefix(const std::string& prefix, std::vector<
     return true;
 }
 
-// 新增：对象拷贝
+// 新增：对象拷贝（修复 CopySource 需要 URL encode）
 bool MinioStorage::copyObject(const std::string& src, const std::string& dst)
 {
-    Aws::S3::Model::CopyObjectRequest request;
-    request.SetBucket(bucket_);
-    request.SetCopySource(bucket_ + "/" + src); // 源对象
-    request.SetKey(dst);                        // 目标对象
+    Aws::S3::Model::HeadObjectRequest headReq;
+    headReq.SetBucket(bucket_);
+    headReq.SetKey(src.c_str());
+    auto headOut = client_->HeadObject(headReq);
+    if (!headOut.IsSuccess()) {
+        std::cerr << "[MinIO] HeadObject failed: " << src << " err=" << headOut.GetError().GetMessage() << std::endl;
+        return false;
+    }
+    uint64_t objSize = headOut.GetResult().GetContentLength();
 
-    auto outcome = client_->CopyObject(request);
-    return outcome.IsSuccess();
+    // 阈值：1GB，超过就用分片拷贝
+    const uint64_t kMultipartThreshold = 1024ull * 1024 * 1024;
+    const uint64_t kPartSize = 100ull * 1024 * 1024; // 100MB
+
+    if (objSize <= kMultipartThreshold) {
+        // 普通 CopyObject
+        std::string encodedKey = urlEncodeAllBytes_(src);
+        std::string copySource = bucket_ + "/" + encodedKey;
+
+        Aws::S3::Model::CopyObjectRequest request;
+        request.SetBucket(bucket_);
+        request.SetCopySource(copySource.c_str());
+        request.SetKey(dst.c_str());
+
+        auto outcome = client_->CopyObject(request);
+        if (!outcome.IsSuccess())
+        {
+            std::cerr << "[MinIO] CopyObject failed:\n"
+                      << "  src=" << src << "\n"
+                      << "  dst=" << dst << "\n"
+                      << "  copySource=" << copySource << "\n"
+                      << "  err=" << outcome.GetError().GetMessage() << std::endl;
+            return false;
+        }
+        return true;
+    }
+
+    // 分片拷贝
+    std::string encodedKey = urlEncodeAllBytes_(src);
+    std::string copySource = bucket_ + "/" + encodedKey;
+
+    // 1. CreateMultipartUpload
+    Aws::S3::Model::CreateMultipartUploadRequest createReq;
+    createReq.SetBucket(bucket_);
+    createReq.SetKey(dst.c_str());
+    auto createOut = client_->CreateMultipartUpload(createReq);
+    if (!createOut.IsSuccess()) {
+        std::cerr << "[MinIO] CreateMultipartUpload failed: " << dst << " err=" << createOut.GetError().GetMessage() << std::endl;
+        return false;
+    }
+    std::string uploadId = createOut.GetResult().GetUploadId();
+
+    std::vector<Aws::S3::Model::CompletedPart> completedParts;
+    int partNumber = 1;
+    uint64_t offset = 0;
+    while (offset < objSize) {
+        uint64_t thisPartSize = std::min(kPartSize, objSize - offset);
+        std::ostringstream range;
+        range << "bytes=" << offset << "-" << (offset + thisPartSize - 1);
+
+        Aws::S3::Model::UploadPartCopyRequest partReq;
+        partReq.SetBucket(bucket_);
+        partReq.SetKey(dst.c_str());
+        partReq.SetCopySource(copySource.c_str());
+        partReq.SetCopySourceRange(range.str().c_str());
+        partReq.SetPartNumber(partNumber);
+        partReq.SetUploadId(uploadId);
+
+        auto partOut = client_->UploadPartCopy(partReq);
+        if (!partOut.IsSuccess()) {
+            std::cerr << "[MinIO] UploadPartCopy failed: part=" << partNumber
+                      << " range=" << range.str()
+                      << " err=" << partOut.GetError().GetMessage() << std::endl;
+            // Abort
+            Aws::S3::Model::AbortMultipartUploadRequest abortReq;
+            abortReq.SetBucket(bucket_);
+            abortReq.SetKey(dst.c_str());
+            abortReq.SetUploadId(uploadId);
+            client_->AbortMultipartUpload(abortReq);
+            return false;
+        }
+        Aws::S3::Model::CompletedPart completed;
+        completed.SetPartNumber(partNumber);
+        completed.SetETag(partOut.GetResult().GetCopyPartResult().GetETag());
+        completedParts.push_back(completed);
+
+        offset += thisPartSize;
+        ++partNumber;
+    }
+
+    // 3. CompleteMultipartUpload
+    Aws::S3::Model::CompletedMultipartUpload completedUpload;
+    completedUpload.SetParts(completedParts);
+
+    Aws::S3::Model::CompleteMultipartUploadRequest completeReq;
+    completeReq.SetBucket(bucket_);
+    completeReq.SetKey(dst.c_str());
+    completeReq.SetUploadId(uploadId);
+    completeReq.SetMultipartUpload(completedUpload);
+
+    auto completeOut = client_->CompleteMultipartUpload(completeReq);
+    if (!completeOut.IsSuccess()) {
+        std::cerr << "[MinIO] CompleteMultipartUpload failed: " << dst
+                  << " err=" << completeOut.GetError().GetMessage() << std::endl;
+        return false;
+    }
+    return true;
 }
 
 // 新增：生成预签名 URL

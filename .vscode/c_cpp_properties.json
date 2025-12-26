@@ -1,0 +1,28 @@
+{
+  "configurations": [
+    {
+      "name": "Linux",
+      "includePath": [
+        "${workspaceFolder}/**",
+
+        "/usr/include/x86_64-linux-gnu/qt5",
+        "/usr/include/x86_64-linux-gnu/qt5/QtCore",
+        "/usr/include/x86_64-linux-gnu/qt5/QtGui",
+        "/usr/include/x86_64-linux-gnu/qt5/QtWidgets",
+        "/usr/include/x86_64-linux-gnu/qt5/QtNetwork",
+        "/usr/include/x86_64-linux-gnu/qt5/QtConcurrent",
+        "/usr/include/x86_64-linux-gnu/qt5/QtXml",
+
+        // add:
+        "/usr/include/x86_64-linux-gnu/qt5/QtMultimedia",
+        "/usr/include/x86_64-linux-gnu/qt5/QtMultimediaWidgets"
+      ],
+      "defines": [],
+      "compilerPath": "/usr/bin/g++",
+      "cStandard": "c17",
+      "cppStandard": "gnu++17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}

@@ -5,7 +5,11 @@
 #include <thread>
 #include <iostream>
 
+// =====================
 // 静态全局变量定义
+// =====================
+
+// 数据库配置（全局唯一）
 static DbCfg g_db = {
     "127.0.0.1", // host
     3306,        // port
@@ -14,13 +18,19 @@ static DbCfg g_db = {
     "nimbus"     // db
 };
 
+// =====================
+// FileServer 构造与启动
+// =====================
+
 FileServer::FileServer(EventLoop *loop, const InetAddress &addr, const std::string &name)
     : server_(loop, addr, name), loop_(loop)
 {
+    // 设置连接和消息回调
     server_.setConnectionCallback(std::bind(&FileServer::onConnection, this, std::placeholders::_1));
     server_.setMessageCallback(std::bind(&FileServer::onMessage, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-    server_.setThreadNum(4);
+    server_.setThreadNum(4); // 4线程
 
+    // 初始化 Minio 存储
     minio_ = std::make_unique<MinioStorage>(
         "127.0.0.1:9000",
         "minioadmin",
@@ -33,8 +43,13 @@ void FileServer::start()
     server_.start();
 }
 
+// =====================
+// 连接事件回调
+// =====================
+
 void FileServer::onConnection(const TcpConnectionPtr &conn)
 {
+    // 连接关闭或新连接时，重置上传状态
     if (!conn->connected())
     {
         resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
@@ -47,13 +62,19 @@ void FileServer::onConnection(const TcpConnectionPtr &conn)
     }
 }
 
+// =====================
+// 消息事件回调（主协议处理）
+// =====================
+
 void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
 {
+    // 只要缓冲区有数据就循环处理
     while (buf->readableBytes() > 0)
     {
+        // ===== 1) 解析 protobuf 头 =====
         if (!pb_head_parsed_)
         {
-            // ===== 1) 解析 protobuf 头 =====
+            // 读取头长度
             if (pb_head_len_ == 0)
             {
                 if (buf->readableBytes() < 4)
@@ -62,6 +83,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 buf->retrieve(4);
             }
 
+            // 读取头内容
             if (buf->readableBytes() < pb_head_len_)
                 return;
 
@@ -81,7 +103,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             file_size_ = head.filesize();
             pb_head_parsed_ = true;
 
-            // ===== Auth / MySQL =====
+            // ===== 2) 认证与登录/注册 =====
             if (head.type() == 12) // 注册
             {
                 std::string err;
@@ -128,6 +150,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             const std::string token = getKv_(head.extra(), "token");
             if (!dbCheckToken_(g_db, token))
             {
+                // 部分操作需要协议格式错误响应
                 if (head.type() == 2 || head.type() == 3 || head.type() == 5 || head.type() == 9)
                     sendLen0Error_(conn, "Unauthorized");
                 else
@@ -138,9 +161,9 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // ===== 2) 按 type 分发 =====
+            // ===== 3) 按 type 分发具体业务 =====
 
-            // 列举云端文件
+            // ---- 云端文件列表 ----
             if (head.type() == 3)
             {
                 std::vector<std::string> files;
@@ -166,7 +189,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 下载文件
+            // ---- 下载文件 ----
             if (head.type() == 2)
             {
                 std::string tmp_path = "/tmp/" + filename_;
@@ -217,7 +240,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 删除（移入回收站）——后台线程 copy+remove，先回 OK
+            // ---- 删除（移入回收站） ----
             if (head.type() == 4)
             {
                 const std::string src = filename_;
@@ -226,6 +249,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 conn->send(std::string("DELETE OK\n"));
                 conn->shutdown();
 
+                // 后台线程 copy+remove
                 std::thread([this, src, dst]()
                 {
                     if (!minio_) return;
@@ -243,7 +267,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 列举回收站
+            // ---- 列举回收站 ----
             if (head.type() == 5)
             {
                 std::vector<std::string> files;
@@ -269,7 +293,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 还原回收站文件 ——后台线程 copy+remove，先回 OK
+            // ---- 还原回收站文件 ----
             if (head.type() == 6)
             {
                 const std::string recycle_name = filename_;
@@ -280,6 +304,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 conn->send(std::string("RESTORE OK\n"));
                 conn->shutdown();
 
+                // 后台线程 copy+remove
                 std::thread([this, recycle_name, origin_name]()
                 {
                     if (!minio_) return;
@@ -297,7 +322,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 彻底删除回收站文件 ——后台线程 remove，先回 OK
+            // ---- 彻底删除回收站文件 ----
             if (head.type() == 7)
             {
                 const std::string recycle_name = filename_;
@@ -305,6 +330,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 conn->send(std::string("REMOVE OK\n"));
                 conn->shutdown();
 
+                // 后台线程 remove
                 std::thread([this, recycle_name]()
                 {
                     if (!minio_) return;
@@ -317,7 +343,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 生成 presigned URL
+            // ---- 生成 presigned URL ----
             if (head.type() == 8)
             {
                 std::string url;
@@ -330,7 +356,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // 预览下载
+            // ---- 预览下载 ----
             if (head.type() == 9)
             {
                 uint64_t max_bytes = 2u * 1024u * 1024u;
@@ -418,7 +444,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
-            // ===== type=10: 大文件分片上传 =====
+            // ===== 4) 大文件分片上传 type=10 =====
             if (head.type() == 10)
             {
                 std::string uploadId;
@@ -454,11 +480,13 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 received_ = 0;
                 file_size_ = chunkSize;
 
+                // 记录分片元信息到 pb_head_buf_
                 pb_head_buf_ = std::string("CHUNK;") + uploadId + ";" + std::to_string(index) + ";" +
                                std::to_string(total) + ";" + std::to_string(fullSize) + ";" + filename_;
             }
             else
             {
+                // 普通上传，直接写文件
                 outfile_.open(filename_, std::ios::binary);
                 if (!outfile_)
                 {
@@ -472,6 +500,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 received_ = 0;
                 std::cout << "Start receiving file: " << filename_ << ", size: " << file_size_ << std::endl;
 
+                // 空文件直接返回
                 if (file_size_ == 0)
                 {
                     outfile_.close();
@@ -487,21 +516,25 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             }
         }
 
-        // ===== 4) 接收上传内容 =====
+        // ===== 5) 接收上传内容 =====
         if (receiving_)
         {
+            // 写入本地文件
             size_t to_write = std::min(static_cast<uint64_t>(buf->readableBytes()), file_size_ - received_);
             outfile_.write(buf->peek(), to_write);
             buf->retrieve(to_write);
             received_ += to_write;
 
+            // 上传完毕
             if (received_ >= file_size_)
             {
                 outfile_.close();
                 receiving_ = false;
 
+                // 分片上传收完一个分片
                 if (pb_head_buf_.rfind("CHUNK;", 0) == 0)
                 {
+                    // 解析分片元信息
                     std::string uploadId, sidx, stotal, sfull, objectName;
                     {
                         const std::string &s = pb_head_buf_;
@@ -541,6 +574,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
 
                     const std::string sessionDir = chunkBaseDir_() + "/" + uploadId;
 
+                    // 检查所有分片是否都已收到
                     if (idx + 1 < total)
                     {
                         conn->send(std::string("CHUNK OK\n"));
@@ -560,6 +594,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                         }
                     }
 
+                    // 合并所有分片
                     const std::string mergedPath = mergedBaseDir_() + "/" + uploadId + ".merged";
                     if (!mergeParts_(sessionDir, mergedPath, total, full))
                     {
@@ -573,6 +608,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     conn->send(std::string("UPLOAD OK\n"));
                     conn->shutdown();
 
+                    // 后台线程上传到 Minio 并清理临时文件
                     std::thread([this, mergedPath, objectName, sessionDir, total]()
                     {
                         if (minio_ && minio_->upload(mergedPath, objectName))
@@ -584,9 +620,11 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     return;
                 }
 
+                // 普通上传
                 conn->send(std::string("UPLOAD OK\n"));
                 std::cout << std::endl << "File received: " << filename_ << std::endl;
 
+                // 上传到 Minio，成功后删除本地文件
                 if (minio_ && minio_->upload(filename_, filename_))
                 {
                     std::cout << "Upload to Minio success: " << filename_ << std::endl;
@@ -603,6 +641,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
         }
         else
         {
+            // 未处于接收状态，丢弃数据
             buf->retrieveAll();
         }
     }

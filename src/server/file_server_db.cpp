@@ -6,12 +6,14 @@
 #include <iomanip>
 #include <openssl/sha.h>
 
+/// 连接MySQL数据库，返回MYSQL指针，失败返回nullptr
 MYSQL *mysqlConnect_(const DbCfg &cfg)
 {
     MYSQL *m = mysql_init(nullptr);
     if (!m)
         return nullptr;
     mysql_options(m, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+    // 连接数据库
     if (!mysql_real_connect(m, cfg.host.c_str(), cfg.user.c_str(), cfg.pass.c_str(), cfg.db.c_str(), cfg.port, nullptr, 0))
     {
         std::cerr << "[MySQL] connect failed: " << mysql_error(m) << std::endl;
@@ -21,6 +23,7 @@ MYSQL *mysqlConnect_(const DbCfg &cfg)
     return m;
 }
 
+/// 对字符串进行MySQL转义，防止SQL注入
 std::string escape_(MYSQL *m, const std::string &s)
 {
     std::string out;
@@ -38,6 +41,12 @@ std::string escape_(MYSQL *m, const std::string &s)
     return out;
 }
 
+/// 用户注册，写入users表，密码加盐SHA256哈希
+/// @param cfg      数据库配置
+/// @param username 用户名
+/// @param password 密码
+/// @param err      [输出] 错误信息
+/// @return 注册成功返回true，否则false
 bool dbRegister_(const DbCfg &cfg, const std::string &username, const std::string &password, std::string &err)
 {
     MYSQL *m = mysqlConnect_(cfg);
@@ -47,16 +56,22 @@ bool dbRegister_(const DbCfg &cfg, const std::string &username, const std::strin
         return false;
     }
 
+    // 生成16字节随机盐
     const auto salt = randomBytes_(16);
+    // 拼接salt+password
     std::vector<unsigned char> concat;
     concat.insert(concat.end(), salt.begin(), salt.end());
     concat.insert(concat.end(), password.begin(), password.end());
+    // 计算SHA256哈希
     const auto hash = sha256_(concat);
 
+    // 转义用户名
     const std::string u = escape_(m, username);
+    // 构造插入SQL
     const std::string sql =
         "INSERT INTO users(username, password_hash, salt) VALUES('" + u + "', UNHEX('" + toHex_(hash) + "'), UNHEX('" + toHex_(salt) + "'))";
 
+    // 执行插入
     if (mysql_query(m, sql.c_str()) != 0)
     {
         const unsigned int ec = mysql_errno(m);
@@ -69,6 +84,13 @@ bool dbRegister_(const DbCfg &cfg, const std::string &username, const std::strin
     return true;
 }
 
+/// 用户登录，校验密码，生成并写入session token
+/// @param cfg      数据库配置
+/// @param username 用户名
+/// @param password 密码
+/// @param tokenOut [输出] 登录成功生成的token
+/// @param err      [输出] 错误信息
+/// @return 登录成功返回true，否则false
 bool dbLogin_(const DbCfg &cfg, const std::string &username, const std::string &password, std::string &tokenOut, std::string &err)
 {
     MYSQL *m = mysqlConnect_(cfg);
@@ -78,6 +100,7 @@ bool dbLogin_(const DbCfg &cfg, const std::string &username, const std::string &
         return false;
     }
 
+    // 查询用户信息
     const std::string u = escape_(m, username);
     const std::string q = "SELECT id, HEX(password_hash), HEX(salt) FROM users WHERE username='" + u + "' LIMIT 1";
     if (mysql_query(m, q.c_str()) != 0)
@@ -104,19 +127,23 @@ bool dbLogin_(const DbCfg &cfg, const std::string &username, const std::string &
         return false;
     }
 
+    // 取出用户ID、哈希、盐
     const long long userId = std::stoll(row[0]);
     const std::string hashHex = row[1] ? row[1] : "";
     const std::string saltHex = row[2] ? row[2] : "";
     mysql_free_result(res);
 
+    // 还原salt和hash
     const auto salt = hexToBytes_(saltHex);
     const auto stored = hexToBytes_(hashHex);
 
+    // 计算输入密码的哈希
     std::vector<unsigned char> concat;
     concat.insert(concat.end(), salt.begin(), salt.end());
     concat.insert(concat.end(), password.begin(), password.end());
     const auto calc = sha256_(concat);
 
+    // 校验密码
     if (calc != stored)
     {
         mysql_close(m);
@@ -124,6 +151,7 @@ bool dbLogin_(const DbCfg &cfg, const std::string &username, const std::string &
         return false;
     }
 
+    // 生成token并写入sessions表
     const std::string token = genUuid_();
     const std::string sql =
         "INSERT INTO sessions(token, user_id) VALUES('" + escape_(m, token) + "', " + std::to_string(userId) + ")";
@@ -140,6 +168,10 @@ bool dbLogin_(const DbCfg &cfg, const std::string &username, const std::string &
     return true;
 }
 
+/// 校验token是否有效（sessions表中存在）
+/// @param cfg   数据库配置
+/// @param token 待校验的token
+/// @return 有效返回true，否则false
 bool dbCheckToken_(const DbCfg &cfg, const std::string &token)
 {
     if (token.empty())
@@ -149,6 +181,7 @@ bool dbCheckToken_(const DbCfg &cfg, const std::string &token)
     if (!m)
         return false;
 
+    // 查询sessions表
     const std::string t = escape_(m, token);
     const std::string q = "SELECT user_id FROM sessions WHERE token='" + t + "' LIMIT 1";
     if (mysql_query(m, q.c_str()) != 0)

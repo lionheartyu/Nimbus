@@ -5,6 +5,7 @@
 #include <random>
 #include <openssl/sha.h>
 
+/// 重置文件上传状态，关闭文件流并清空相关变量
 void resetState_(bool &pb_head_parsed,
                  uint32_t &pb_head_len,
                  std::string &pb_head_buf,
@@ -26,6 +27,7 @@ void resetState_(bool &pb_head_parsed,
     receiving = false;
 }
 
+/// 发送长度为0的错误响应（协议规定），附带错误消息
 void sendLen0Error_(const TcpConnectionPtr &conn, const std::string &msg)
 {
     uint32_t len = 0;
@@ -33,6 +35,7 @@ void sendLen0Error_(const TcpConnectionPtr &conn, const std::string &msg)
     conn->send(std::string("ERROR: ") + msg + "\n");
 }
 
+/// 从extra字符串中提取key对应的值（格式 key=xxx;）
 std::string getKv_(const std::string &extra, const std::string &key)
 {
     const std::string k = key + "=";
@@ -44,6 +47,7 @@ std::string getKv_(const std::string &extra, const std::string &key)
     return extra.substr(p, (e == std::string::npos) ? std::string::npos : (e - p));
 }
 
+/// 生成UUID字符串（伪随机，非标准实现）
 std::string genUuid_()
 {
     static thread_local std::mt19937_64 rng{std::random_device{}()};
@@ -60,6 +64,7 @@ std::string genUuid_()
     return hex(a >> 32, 8) + "-" + hex(a >> 16, 4) + "-" + hex(a, 4) + "-" + hex(b >> 48, 4) + "-" + hex(b, 12);
 }
 
+/// 计算数据的SHA256哈希
 std::vector<unsigned char> sha256_(const std::vector<unsigned char> &data)
 {
     std::vector<unsigned char> out(SHA256_DIGEST_LENGTH);
@@ -70,6 +75,7 @@ std::vector<unsigned char> sha256_(const std::vector<unsigned char> &data)
     return out;
 }
 
+/// 生成n字节的随机数据
 std::vector<unsigned char> randomBytes_(size_t n)
 {
     std::vector<unsigned char> b(n);
@@ -80,6 +86,7 @@ std::vector<unsigned char> randomBytes_(size_t n)
     return b;
 }
 
+/// 字节数组转16进制字符串
 std::string toHex_(const std::vector<unsigned char> &b)
 {
     std::ostringstream os;
@@ -89,6 +96,7 @@ std::string toHex_(const std::vector<unsigned char> &b)
     return os.str();
 }
 
+/// 16进制字符串转字节数组
 std::vector<unsigned char> hexToBytes_(const std::string &hx)
 {
     std::vector<unsigned char> b;

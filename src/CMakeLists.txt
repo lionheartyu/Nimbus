@@ -4,26 +4,32 @@ project(NimbusServer)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_AUTOMOC ON)
 
+# ========== 头文件搜索路径 ==========
 include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/proto
     /usr/include/mymuduo
 )
 
+# ========== 库文件搜索路径 ==========
 link_directories(
     /usr/lib
 )
 
+# ========== 查找 Protobuf ==========
 find_package(Protobuf REQUIRED)
 message(STATUS "Using protobuf ${Protobuf_VERSION}")
 
+# ========== 查找 AWS S3 SDK ==========
 find_package(AWSSDK REQUIRED COMPONENTS s3)
 
+# ========== 查找 Qt5 组件 ==========
 find_package(Qt5 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets Concurrent)
 
-# ===== MySQL + OpenSSL（给服务端登录/注册用）=====
+# ========== 查找 OpenSSL ==========
 find_package(OpenSSL REQUIRED)
 
+# ========== 查找 MySQL C API ==========
 # Ubuntu/Debian 的 libmysqlclient-dev 通常不带 CMake config，用 Find 兜底
 find_path(MYSQL_INCLUDE_DIR
     NAMES mysql/mysql.h
@@ -44,7 +50,7 @@ message(STATUS "MySQL library: ${MYSQL_LIBRARY}")
 
 include_directories(${MYSQL_INCLUDE_DIR})
 
-# 定义服务器可执行文件及其源文件
+# ========== 服务器可执行文件及其源文件 ==========
 add_executable(nimbus_server
     main.cpp
     server/file_server.cpp
@@ -55,7 +61,7 @@ add_executable(nimbus_server
     ../proto/file.pb.cc
 )
 
-# 定义 Windows 客户端可执行文件（Qt）
+# ========== Windows 客户端可执行文件（Qt） ==========
 add_executable(file_client_windows
     client/file_client_windows.cpp
     client/draggable_listwidget.cpp
@@ -65,7 +71,7 @@ add_executable(file_client_windows
     ../proto/file.pb.cc
 )
 
-# 分别设置输出目录
+# ========== 设置输出目录 ==========
 set_target_properties(nimbus_server PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/n_server_target
 )
@@ -74,6 +80,7 @@ set_target_properties(file_client_windows PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/n_client_target
 )
 
+# ========== 链接服务器依赖库 ==========
 target_link_libraries(nimbus_server
     mymuduo
     pthread
@@ -84,6 +91,7 @@ target_link_libraries(nimbus_server
     OpenSSL::Crypto
 )
 
+# ========== 链接客户端依赖库 ==========
 target_link_libraries(file_client_windows
     Qt5::Widgets
     Qt5::Multimedia

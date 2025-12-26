@@ -19,8 +19,13 @@
 
 namespace {
 
-constexpr int kSockTimeoutSecShort = 10;
+// =========================
+// 常量与工具函数
+// =========================
 
+constexpr int kSockTimeoutSecShort = 10; // socket短超时（秒）
+
+// 设置socket读写超时
 bool setSocketTimeouts(int sock, int seconds)
 {
     timeval tv{};
@@ -31,6 +36,7 @@ bool setSocketTimeouts(int sock, int seconds)
     return true;
 }
 
+// 发送全部数据，处理短写
 bool sendAll(int sock, const void* data, size_t len)
 {
     const char* p = static_cast<const char*>(data);
@@ -46,6 +52,7 @@ bool sendAll(int sock, const void* data, size_t len)
     return true;
 }
 
+// 连接服务器，返回socket
 bool connectToServer(int& sock, const char* ip, uint16_t port)
 {
     sock = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -73,12 +80,14 @@ bool connectToServer(int& sock, const char* ip, uint16_t port)
     return true;
 }
 
+// 发送protobuf头部（长度+内容）
 bool sendPbHeader(int sock, const std::string& pb)
 {
     const uint32_t pb_len = static_cast<uint32_t>(pb.size());
     return sendAll(sock, &pb_len, sizeof(pb_len)) && sendAll(sock, pb.data(), pb.size());
 }
 
+// 读取socket所有文本内容（用于响应）
 static inline QString readAllText_(int sock)
 {
     std::string out;
@@ -93,6 +102,7 @@ static inline QString readAllText_(int sock)
     return QString::fromUtf8(out.data(), static_cast<int>(out.size())).trimmed();
 }
 
+// 注册/登录界面样式表
 static inline QString authStyleSheet_()
 {
     return QString(
@@ -109,6 +119,7 @@ static inline QString authStyleSheet_()
     );
 }
 
+// 卡片风格容器
 static inline QWidget* makeCard_(QWidget* parent)
 {
     auto* card = new QWidget(parent);
@@ -124,6 +135,10 @@ static inline QWidget* makeCard_(QWidget* parent)
 
 } // namespace
 
+// =========================
+// 注册对话框实现
+// =========================
+
 RegisterDialog::RegisterDialog(QWidget* parent)
     : QDialog(parent)
 {
@@ -132,42 +147,52 @@ RegisterDialog::RegisterDialog(QWidget* parent)
     setFixedSize(480, 360);
     setStyleSheet(authStyleSheet_());
 
+    // 主布局
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(18, 18, 18, 18);
 
+    // 卡片容器
     QWidget* card = makeCard_(this);
     auto* cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(22, 20, 22, 18);
     cardLayout->setSpacing(10);
 
+    // 标题
     auto* title = new QLabel("创建 Nimbus 账号", card);
     title->setObjectName("Title");
 
+    // 副标题
     auto* sub = new QLabel("注册后即可返回登录使用。", card);
     sub->setObjectName("SubTitle");
 
+    // 用户名输入
     userEdit_ = new QLineEdit(card);
     userEdit_->setPlaceholderText("用户名");
     userEdit_->setMinimumHeight(40);
 
+    // 密码输入
     passEdit_ = new QLineEdit(card);
     passEdit_->setPlaceholderText("密码");
     passEdit_->setEchoMode(QLineEdit::Password);
     passEdit_->setMinimumHeight(40);
 
+    // 确认密码输入
     pass2Edit_ = new QLineEdit(card);
     pass2Edit_->setPlaceholderText("确认密码");
     pass2Edit_->setEchoMode(QLineEdit::Password);
     pass2Edit_->setMinimumHeight(40);
 
+    // 提示信息
     tipLabel_ = new QLabel("建议：使用较强密码。", card);
     tipLabel_->setObjectName("Tip");
 
+    // 注册按钮
     regBtn_ = new QPushButton("注册", card);
     regBtn_->setObjectName("Primary");
     regBtn_->setMinimumHeight(42);
     regBtn_->setDefault(true);
 
+    // 组装卡片
     cardLayout->addWidget(title);
     cardLayout->addWidget(sub);
     cardLayout->addSpacing(6);
@@ -180,21 +205,28 @@ RegisterDialog::RegisterDialog(QWidget* parent)
 
     root->addWidget(card);
 
+    // 注册按钮点击事件
     connect(regBtn_, &QPushButton::clicked, this, &RegisterDialog::onRegister);
 }
+
+// =========================
+// 注册请求实现
+// =========================
 
 RegisterDialog::Result RegisterDialog::doRegister_(const QString& user, const QString& pass)
 {
     Result r;
 
+    // 构造protobuf请求
     FileHeader header;
-    header.set_type(12);
+    header.set_type(12); // 12=注册
     header.set_filename(user.toStdString());
     header.set_extra(pass.toStdString());
 
     std::string pb;
     header.SerializeToString(&pb);
 
+    // 连接服务器
     int sock = -1;
     if (!connectToServer(sock, "10.20.32.88", 8080))
     {
@@ -202,6 +234,7 @@ RegisterDialog::Result RegisterDialog::doRegister_(const QString& user, const QS
         return r;
     }
 
+    // 发送请求
     if (!sendPbHeader(sock, pb))
     {
         ::close(sock);
@@ -209,9 +242,11 @@ RegisterDialog::Result RegisterDialog::doRegister_(const QString& user, const QS
         return r;
     }
 
+    // 读取响应
     const QString resp = readAllText_(sock);
     ::close(sock);
 
+    // 注册成功
     if (resp.startsWith("REGISTER OK", Qt::CaseInsensitive))
     {
         r.ok = true;
@@ -219,9 +254,14 @@ RegisterDialog::Result RegisterDialog::doRegister_(const QString& user, const QS
         return r;
     }
 
+    // 注册失败
     r.msg = resp.isEmpty() ? "未收到服务器响应" : resp;
     return r;
 }
+
+// =========================
+// 注册按钮点击事件
+// =========================
 
 void RegisterDialog::onRegister()
 {
@@ -229,6 +269,7 @@ void RegisterDialog::onRegister()
     const QString pass = passEdit_->text();
     const QString pass2 = pass2Edit_->text();
 
+    // 检查输入
     if (user.isEmpty() || pass.isEmpty() || pass2.isEmpty())
     {
         QMessageBox::warning(this, "提示", "请填写完整信息");
@@ -240,12 +281,14 @@ void RegisterDialog::onRegister()
         return;
     }
 
+    // 禁用控件，防止重复点击
     regBtn_->setEnabled(false);
     userEdit_->setEnabled(false);
     passEdit_->setEnabled(false);
     pass2Edit_->setEnabled(false);
     tipLabel_->setText("正在注册…");
 
+    // 后台线程注册，避免阻塞UI
     struct R { bool ok; QString msg; };
     auto* watcher = new QFutureWatcher<R>(this);
     watcher->setFuture(QtConcurrent::run([this, user, pass]() -> R {
@@ -257,6 +300,7 @@ void RegisterDialog::onRegister()
         const R r = watcher->result();
         watcher->deleteLater();
 
+        // 恢复控件
         regBtn_->setEnabled(true);
         userEdit_->setEnabled(true);
         passEdit_->setEnabled(true);

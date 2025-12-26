@@ -1,0 +1,52 @@
+@startuml
+title Nimbus 分片上传相关模块关系图
+
+class "分片参数解析\nparseChunkExtra_" as ParseChunkExtra {
+    +bool parseChunkExtra_(extra, uploadId, index, total, fullSize, chunkSize)
+}
+
+class "分片临时目录\nchunkBaseDir_" as ChunkBaseDir {
+    +std::string chunkBaseDir_()
+}
+class "合并后目录\nmergedBaseDir_" as MergedBaseDir {
+    +std::string mergedBaseDir_()
+}
+class "确保目录存在\nensureDir_" as EnsureDir {
+    +bool ensureDir_(path)
+}
+class "判断文件存在\nfileExists_" as FileExists {
+    +bool fileExists_(path)
+}
+class "获取文件大小\nfileSize_" as FileSize {
+    +uint64_t fileSize_(path)
+}
+class "合并分片\nmergeParts_" as MergeParts {
+    +bool mergeParts_(sessionDir, mergedPath, totalParts, fullSize)
+}
+class "清理会话\ncleanupSession_" as CleanupSession {
+    +void cleanupSession_(sessionDir, mergedPath, totalParts)
+}
+
+ParseChunkExtra ..> ChunkBaseDir : 解析参数后用到
+ParseChunkExtra ..> MergedBaseDir
+MergeParts ..> EnsureDir : 依赖
+MergeParts ..> FileExists : 校验
+MergeParts ..> FileSize : 校验
+CleanupSession ..> FileExists : 删除分片
+CleanupSession ..> EnsureDir : 删除目录
+
+note right of ParseChunkExtra
+负责解析分片上传的 extra 字符串，
+提取 uploadId、index、total、fullSize、chunkSize
+end note
+
+note right of MergeParts
+合并所有分片为一个完整文件，
+并校验合并后文件大小
+end note
+
+note right of CleanupSession
+清理分片目录和合并文件
+end note
+
+@enduml

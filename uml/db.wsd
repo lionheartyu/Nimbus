@@ -1,0 +1,37 @@
+@startuml
+title Nimbus 数据库操作简易关系图
+
+class DbCfg {
+    host
+    port
+    user
+    pass
+    db
+}
+
+class MYSQL
+
+class "注册用户\ndbRegister_" as Register
+class "用户登录\ndbLogin_" as Login
+class "校验Token\ndbCheckToken_" as CheckToken
+
+DbCfg --> Register : 数据库配置
+DbCfg --> Login
+DbCfg --> CheckToken
+
+Register --> MYSQL : 连接数据库
+Login --> MYSQL
+CheckToken --> MYSQL
+
+Register : 生成盐
+Register : 密码哈希
+Register : 写入users表
+
+Login : 查询users表
+Login : 校验密码
+Login : 生成token
+Login : 写入sessions表
+
+CheckToken : 查询sessions表
+
+@enduml

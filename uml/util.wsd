@@ -1,0 +1,77 @@
+@startuml
+title Nimbus 工具函数（file_server_util.cpp）关系图
+
+class "resetState_" {
+    +void resetState_(...)
+    重置上传状态，关闭文件流
+}
+class "sendLen0Error_" {
+    +void sendLen0Error_(conn, msg)
+    发送协议错误响应
+}
+class "getKv_" {
+    +std::string getKv_(extra, key)
+    提取key对应的值
+}
+class "genUuid_" {
+    +std::string genUuid_()
+    生成UUID字符串
+}
+class "sha256_" {
+    +std::vector<unsigned char> sha256_(data)
+    计算SHA256哈希
+}
+class "randomBytes_" {
+    +std::vector<unsigned char> randomBytes_(n)
+    生成随机字节
+}
+class "toHex_" {
+    +std::string toHex_(b)
+    字节转16进制字符串
+}
+class "hexToBytes_" {
+    +std::vector<unsigned char> hexToBytes_(hx)
+    16进制字符串转字节
+}
+
+"resetState_" --> "sendLen0Error_" : 上传异常时可能调用
+"genUuid_" ..> "randomBytes_" : 可选，生成唯一ID时可能用到随机数
+"sha256_" ..> "randomBytes_" : 注册/加密时常配合使用
+"toHex_" <.. "sha256_" : 哈希结果常转16进制
+"hexToBytes_" <.. "toHex_" : 反向转换
+
+note right of resetState_
+重置文件上传相关变量，
+关闭文件流，清理状态
+end note
+
+note right of sendLen0Error_
+发送长度为0的错误响应，
+用于协议错误或鉴权失败
+end note
+
+note right of getKv_
+从extra字符串中提取key=xxx;格式的值
+end note
+
+note right of genUuid_
+生成伪随机UUID字符串
+end note
+
+note right of sha256_
+计算数据的SHA256哈希值
+end note
+
+note right of randomBytes_
+生成指定长度的随机字节数组
+end note
+
+note right of toHex_
+将字节数组转为16进制字符串
+end note
+
+note right of hexToBytes_
+将16进制字符串转为字节数组
+end note
+
+@enduml

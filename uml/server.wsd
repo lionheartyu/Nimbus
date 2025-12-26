@@ -1,0 +1,34 @@
+@startuml
+title Nimbus 服务端架构流程图
+
+actor Client as "Qt客户端/CLI"
+
+rectangle "muduo网络层\n(TcpServer/EventLoop)" as Muduo {
+    [FileServer]
+}
+
+rectangle "业务逻辑层" as Logic {
+    [协议解析\n(Protobuf)]
+    [业务分发\n(FileServer)]
+    [分片上传/合并\n(file_server_chunk.cpp)]
+    [用户认证/鉴权\n(file_server_db.cpp)]
+    [文件操作接口\n(MinioStorage)]
+}
+
+database "MinIO\n对象存储" as MinIO
+database "MySQL\n用户/会话表" as MySQL
+
+Client --> Muduo : TCP/Protobuf请求
+Muduo --> Logic : 解析请求
+Logic --> [协议解析\n(Protobuf)] : 解析消息
+[协议解析\n(Protobuf)] --> [业务分发\n(FileServer)] : 分发请求
+
+[业务分发\n(FileServer)] --> [分片上传/合并\n(file_server_chunk.cpp)] : 分片上传/合并
+[业务分发\n(FileServer)] --> [用户认证/鉴权\n(file_server_db.cpp)] : 注册/登录/鉴权
+[业务分发\n(FileServer)] --> [文件操作接口\n(MinioStorage)] : 文件上传/下载/删除
+
+[分片上传/合并\n(file_server_chunk.cpp)] --> [文件操作接口\n(MinioStorage)] : 合并后上传
+[用户认证/鉴权\n(file_server_db.cpp)] --> MySQL : 查询/写入用户、会话
+[文件操作接口\n(MinioStorage)] --> MinIO : S3 API操作
+
+@enduml

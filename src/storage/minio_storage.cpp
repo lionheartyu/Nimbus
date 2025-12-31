@@ -20,7 +20,7 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
-
+#include <sstream>
 // 工具函数：百分号编码 UTF-8 字节流
 // S3 只允许部分字符，其它字符都需要编码
 static std::string urlEncodeAllBytes_(const std::string& s)
@@ -270,4 +270,18 @@ std::string MinioStorage::presignedUrl(const std::string& objectName, int expire
         bucket_, objectName, Aws::Http::HttpMethod::HTTP_GET, expireSeconds);
     if (outcome.empty()) return "";
     return outcome;
+}
+
+// 新增：上传空对象（用于创建空文件或空文件夹）
+bool MinioStorage::uploadEmpty(const std::string& objectName)
+{
+    Aws::S3::Model::PutObjectRequest request;
+    request.SetBucket(bucket_);
+    request.SetKey(objectName);
+
+    auto emptyStream = Aws::MakeShared<Aws::StringStream>("EmptyFolderStream");
+    request.SetBody(emptyStream);
+
+    auto outcome = client_->PutObject(request);
+    return outcome.IsSuccess();
 }

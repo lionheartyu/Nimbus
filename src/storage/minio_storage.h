@@ -61,6 +61,11 @@ public:
     /// @return 预签名URL字符串，失败返回空
     std::string presignedUrl(const std::string& objectName, int expireSeconds = 3600);
 
+    /// 上传空对象到 Minio/S3
+    /// @param objectName 对象名（云端文件名）
+    /// @return 上传成功返回 true
+    bool uploadEmpty(const std::string& objectName);
+
 private:
     std::string bucket_;                             ///< 桶名
     std::shared_ptr<Aws::S3::S3Client> client_;      ///< S3客户端

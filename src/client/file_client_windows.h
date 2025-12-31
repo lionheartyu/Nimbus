@@ -15,10 +15,10 @@ class FileClientWindow : public QWidget
     Q_OBJECT
 public:
     /// 构造函数
-    explicit FileClientWindow(QWidget* parent = nullptr);
+    explicit FileClientWindow(QWidget *parent = nullptr);
 
     /// 设置登录 token
-    void setToken(const QString& token) { token_ = token; }
+    void setToken(const QString &token) { token_ = token; }
 
     /// 日志输出控件（公有，便于外部追加日志）
     QTextEdit *logEdit;
@@ -55,17 +55,17 @@ private slots:
     void onRecycle();
 
 private:
-    QString token_; ///< 当前登录用户的 token
-
+    QString token_;      ///< 当前登录用户的 token
+    QString currentDir_; ///< 当前浏览的目录前缀，默认为空字符串
     // UI 控件成员
-    QLineEdit *filePathEdit;      ///< 文件路径输入框
-    QPushButton *browseBtn;       ///< 选择文件按钮
-    QPushButton *uploadBtn;       ///< 上传按钮
-    QPushButton *listBtn;         ///< 云端文件列表按钮
-    QPushButton *downloadBtn;     ///< 下载按钮
-    QPushButton *recycleBtn;      ///< 回收站按钮
-    QProgressBar *progressBar;    ///< 上传/下载进度条
-    QListWidget *fileListWidget;  ///< 文件列表控件
+    QLineEdit *filePathEdit;     ///< 文件路径输入框
+    QPushButton *browseBtn;      ///< 选择文件按钮
+    QPushButton *uploadBtn;      ///< 上传按钮
+    QPushButton *listBtn;        ///< 云端文件列表按钮
+    QPushButton *downloadBtn;    ///< 下载按钮
+    QPushButton *recycleBtn;     ///< 回收站按钮
+    QProgressBar *progressBar;   ///< 上传/下载进度条
+    QListWidget *fileListWidget; ///< 文件列表控件
 
-    bool inRecycle = false;       ///< 是否处于回收站视图
+    bool inRecycle = false; ///< 是否处于回收站视图
 };

@@ -36,7 +36,7 @@
 #include <unistd.h>
 #include <vector>
 #include <QUuid> // add
-
+#include <qinputdialog.h>
 namespace
 {
 
@@ -539,34 +539,16 @@ void FileClientWindow::onUpload()
             const QString uploadId = makeUploadId_();
             const qint64 total = (filesize + kChunkSize - 1) / kChunkSize;
 
-            // ===== 新增：查询已上传分片 =====
-            std::set<qint64> uploadedChunks;
-            {
-                FileHeader header;
-                header.set_type(13); // type=13 查询分片
-                header.set_extra(QString("uploadId=%1").arg(uploadId).toStdString());
-                std::string pb_head;
-                header.SerializeToString(&pb_head);
-
-                int sock = -1;
-                if (connectToServer(sock, "10.20.32.88", 8080, kSockTimeoutSecShort)) {
-                    sendPbHeader(sock, pb_head);
-                    uint32_t resp_len = 0;
-                    if (recvAll(sock, &resp_len, sizeof(resp_len)) && resp_len > 0 && resp_len < 4096) {
-                        std::string resp_buf(resp_len, '\0');
-                        if (recvAll(sock, &resp_buf[0], resp_len)) {
-                            QStringList parts = QString::fromStdString(resp_buf).split(';', Qt::SkipEmptyParts);
-                            for (const QString &s : parts) uploadedChunks.insert(s.toLongLong());
-                        }
-                    }
-                    ::close(sock);
-                }
-            }
+            QMetaObject::invokeMethod(this, [=] {
+                logEdit->append(QString("大文件分片上传: %1, size=%2, chunks=%3, uploadId=%4")
+                                    .arg(relPath)
+                                    .arg(filesize)
+                                    .arg(total)
+                                    .arg(uploadId));
+            }, Qt::QueuedConnection);
 
             for (qint64 idx = 0; idx < total; ++idx)
             {
-                if (uploadedChunks.count(idx)) continue; // 跳过已上传分片
-
                 const qint64 offset = idx * kChunkSize;
                 const qint64 thisSize = std::min(kChunkSize, filesize - offset);
 
@@ -761,82 +743,52 @@ void FileClientWindow::onList()
 {
     FileHeader header;
     header.set_type(3);
-    header.set_extra(tokenExtra_(token_)); // add
+    if (!currentDir_.isEmpty())
+        header.set_extra(tokenExtra_(token_) + ";prefix=" + currentDir_.toStdString());
+    else
+        header.set_extra(tokenExtra_(token_));
 
     std::string pb_head;
     header.SerializeToString(&pb_head);
 
     int sock = -1;
     if (!connectToServer(sock, "10.20.32.88", 8080))
-    {
-        logEdit->append("连接服务器失败！");
         return;
-    }
-
-    if (!sendPbHeader(sock, pb_head))
-    {
-        logEdit->append("发送请求失败！");
-        ::close(sock);
-        return;
-    }
+    if (!sendPbHeader(sock, pb_head)) { ::close(sock); return; }
 
     uint32_t resp_len = 0;
-    if (!recvAll(sock, &resp_len, sizeof(resp_len)))
-    {
-        logEdit->append("未收到服务器响应长度（可能超时）！");
-        ::close(sock);
-        return;
-    }
+    if (!recvAll(sock, &resp_len, sizeof(resp_len))) { ::close(sock); return; }
 
-    if (resp_len == 0)
-    {
-        // 空列表：不要卡死，直接刷新为空
-        fileListWidget->clear();
-        logEdit->clear();
-        logEdit->append("云盘文件列表为空。");
-        ::close(sock);
-        inRecycle = false;
-        return;
-    }
+    fileListWidget->clear();
+    // ★ 如果不是根目录，加“..”返回上一级
+    if (!currentDir_.isEmpty())
+        fileListWidget->addItem("..");
 
-    if (resp_len > kMaxListResponseBytes)
-    {
-        logEdit->append("服务器返回的列表长度异常，已拒绝处理。");
-        ::close(sock);
-        return;
-    }
+    if (resp_len == 0) { ::close(sock); return; }
 
     std::string resp_buf(resp_len, '\0');
-    if (!recvAll(sock, &resp_buf[0], resp_len))
-    {
-        logEdit->append("未收到完整文件列表（可能超时/断开）！");
-        ::close(sock);
-        return;
-    }
+    if (!recvAll(sock, &resp_buf[0], resp_len)) { ::close(sock); return; }
 
     ListFilesResponse resp;
-    if (!resp.ParseFromString(resp_buf))
-    {
-        logEdit->append("文件列表解析失败！");
-        ::close(sock);
-        return;
-    }
-
-    logEdit->clear();
-    logEdit->append("云盘文件列表已刷新。");
-    fileListWidget->clear();
+    if (!resp.ParseFromString(resp_buf)) { ::close(sock); return; }
 
     for (int i = 0; i < resp.filenames_size(); ++i)
     {
         const QString name = QString::fromStdString(resp.filenames(i));
-        if (!name.startsWith("recycle/"))
+        if (currentDir_.isEmpty() || name.startsWith(currentDir_))
         {
-            fileListWidget->addItem(name);
+            QString sub = currentDir_.isEmpty() ? name : name.mid(currentDir_.length());
+            if (!sub.isEmpty())
+            {
+                int slash = sub.indexOf('/');
+                if (slash < 0)
+                    fileListWidget->addItem(sub); // 文件
+                else if (slash == sub.length() - 1)
+                    fileListWidget->addItem(sub); // 直接子文件夹
+            }
         }
     }
-
     ::close(sock);
-    inRecycle = false;
 }
 
 // 新增：下载按钮槽函数，实现文件下载逻辑
@@ -988,6 +940,8 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
     QMenu contextMenu;
     QAction *downloadAction = contextMenu.addAction("下载文件");
     QAction *viewAction = contextMenu.addAction("查看文件");
+    QAction *renameAction = contextMenu.addAction("重命名"); // ★加上这一行
+    QAction *mkdirAction = contextMenu.addAction("新建文件夹");
     QAction *deleteAction = nullptr;
     QAction *restoreAction = nullptr;
     QAction *removeAction = nullptr;
@@ -1022,7 +976,90 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
         onFileDoubleClicked(item);
         return;
     }
+    if (selectedAction == renameAction)
+    {
+        bool ok = false;
+        QString newname = QInputDialog::getText(this, "重命名", "新文件名：", QLineEdit::Normal, filenameShown, &ok);
+        newname = newname.trimmed();
+        if (!ok || newname.isEmpty() || newname == filenameShown)
+            return;
 
+        // 回收站文件要带 recycle/ 前缀
+        QString srcName = inRecycle ? ("recycle/" + filenameShown) : filenameShown;
+        QString dstName = inRecycle ? ("recycle/" + newname) : newname;
+
+        FileHeader header;
+        header.set_filename(srcName.toStdString());
+        header.set_type(20);
+        header.set_extra(tokenExtra_(token_) + ";newname=" + dstName.toStdString());
+
+        std::string pb_head;
+        header.SerializeToString(&pb_head);
+
+        int sock = -1;
+        if (!connectToServer(sock, "10.20.32.88", 8080))
+            return;
+        if (!sendPbHeader(sock, pb_head))
+        {
+            ::close(sock);
+            return;
+        }
+        char resp[128] = {0};
+        int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
+        ::close(sock);
+
+        QString respText = (n > 0) ? QString::fromUtf8(resp, n).trimmed() : QString();
+        if (respText.startsWith("RENAME OK"))
+            QMessageBox::information(this, "重命名成功", "文件已重命名为：" + newname);
+        else
+            QMessageBox::warning(this, "重命名失败", respText);
+
+        if (!inRecycle)
+            onList();
+        else
+            onRecycle();
+        return;
+    }
+    if (selectedAction == mkdirAction)
+    {
+        bool ok = false;
+        QString dirname = QInputDialog::getText(this, "新建文件夹", "文件夹名：", QLineEdit::Normal, "", &ok);
+        dirname = dirname.trimmed();
+        if (!ok || dirname.isEmpty())
+            return;
+
+        // 自动补全斜杠
+        if (!dirname.endsWith('/'))
+            dirname += '/';
+
+        FileHeader header;
+        header.set_type(22);
+        header.set_extra(tokenExtra_(token_) + ";dirname=" + dirname.toStdString());
+
+        std::string pb_head;
+        header.SerializeToString(&pb_head);
+
+        int sock = -1;
+        if (!connectToServer(sock, "10.20.32.88", 8080))
+            return;
+        if (!sendPbHeader(sock, pb_head))
+        {
+            ::close(sock);
+            return;
+        }
+        char resp[128] = {0};
+        int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
+        ::close(sock);
+
+        QString respText = (n > 0) ? QString::fromUtf8(resp, n).trimmed() : QString();
+        if (respText.startsWith("MKDIR OK"))
+            QMessageBox::information(this, "新建文件夹成功", respText);
+        else
+            QMessageBox::warning(this, "新建文件夹失败", respText);
+
+        onList();
+        return;
+    }
     // ===== 删除/还原/彻底删除：统一走后台 + 进度条 =====
     auto runOpWithProgress_ = [this](const QString &title,
                                      const QString &text,
@@ -1346,13 +1383,32 @@ void FileClientWindow::onRecycle()
 // 文件列表双击事件：打开文件
 void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 {
-    if (!item)
-        return;
-
+    if (!item) return;
     QString filename = item->text();
-    if (inRecycle)
-        filename = "recycle/" + filename;
 
+    // ★ 返回上一级
+    if (filename == "..") {
+        if (!currentDir_.isEmpty()) {
+            QString dir = currentDir_;
+            if (dir.endsWith('/')) dir.chop(1);
+            int idx = dir.lastIndexOf('/');
+            if (idx >= 0)
+                currentDir_ = dir.left(idx + 1);
+            else
+                currentDir_.clear();
+        }
+        onList();
+        return;
+    }
+
+    // ★ 进入文件夹
+    if (filename.endsWith('/')) {
+        currentDir_ += filename;
+        onList();
+        return;
+    }
+
+    // ===== 其它类型：保持你原来的预览/打开逻辑 =====
     const QString ext = fileExtLower_(filename);
 
     // ===== 1) 图片/文本：走 type=9 内置预览 =====

@@ -76,8 +76,9 @@ private:
     QPushButton *recycleBtn;     ///< 回收站按钮
     QProgressBar *progressBar;   ///< 上传/下载进度条
     QListWidget *fileListWidget; ///< 文件列表控件
-    QLineEdit *searchEdit = nullptr;// 文件搜索输入框
-    QPushButton *searchBtn = nullptr;// 文件搜索按钮
-    bool inRecycle = false; ///< 是否处于回收站视图
+
+    bool inRecycle = false;           ///< 是否处于回收站视图
     QPushButton *logoutBtn = nullptr; ///< 登出按钮
+QLineEdit *searchEdit = nullptr;
+QPushButton *searchBtn = nullptr;
 };

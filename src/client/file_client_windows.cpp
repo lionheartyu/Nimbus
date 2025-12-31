@@ -28,8 +28,7 @@
 #include <QMediaPlayer>
 #include <QVideoWidget>
 #include "../../proto/file.pb.h"
-#include <QLineEdit>
-#include <QPushButton>
+
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
@@ -776,42 +775,22 @@ void FileClientWindow::onList()
     int sock = -1;
     if (!connectToServer(sock, "10.20.32.88", 8080))
         return;
-    if (!sendPbHeader(sock, pb_head))
-    {
-        ::close(sock);
-        return;
-    }
+    if (!sendPbHeader(sock, pb_head)) { ::close(sock); return; }
 
     uint32_t resp_len = 0;
-    if (!recvAll(sock, &resp_len, sizeof(resp_len)))
-    {
-        ::close(sock);
-        return;
-    }
+    if (!recvAll(sock, &resp_len, sizeof(resp_len))) { ::close(sock); return; }
 
     fileListWidget->clear();
     if (!currentDir_.isEmpty())
         fileListWidget->addItem("..");
 
-    if (resp_len == 0)
-    {
-        ::close(sock);
-        return;
-    }
+    if (resp_len == 0) { ::close(sock); return; }
 
     std::string resp_buf(resp_len, '\0');
-    if (!recvAll(sock, &resp_buf[0], resp_len))
-    {
-        ::close(sock);
-        return;
-    }
+    if (!recvAll(sock, &resp_buf[0], resp_len)) { ::close(sock); return; }
 
     ListFilesResponse resp;
-    if (!resp.ParseFromString(resp_buf))
-    {
-        ::close(sock);
-        return;
-    }
+    if (!resp.ParseFromString(resp_buf)) { ::close(sock); return; }
 
     for (int i = 0; i < resp.filenames_size(); ++i)
     {
@@ -990,8 +969,7 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
 
     if (!inRecycle)
         deleteAction = contextMenu.addAction("删除(移入回收站)");
-    else
-    {
+    else {
         restoreAction = contextMenu.addAction("还原");
         removeAction = contextMenu.addAction("彻底删除");
     }
@@ -1106,16 +1084,13 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
                                             "目标文件夹路径（如 foo/ 或 空表示根目录）：",
                                             QLineEdit::Normal, currentDir_, &ok);
         dst = dst.trimmed();
-        if (!ok)
-            return;
+        if (!ok) return;
 
         QString dstPath;
         if (dst.isEmpty())
             dstPath = filenameShown;
-        else
-        {
-            if (!dst.endsWith('/'))
-                dst += '/';
+        else {
+            if (!dst.endsWith('/')) dst += '/';
             dstPath = dst + filenameShown;
         }
 
@@ -1128,13 +1103,8 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
         header.SerializeToString(&pb_head);
 
         int sock = -1;
-        if (!connectToServer(sock, "10.20.32.88", 8080))
-            return;
-        if (!sendPbHeader(sock, pb_head))
-        {
-            ::close(sock);
-            return;
-        }
+        if (!connectToServer(sock, "10.20.32.88", 8080)) return;
+        if (!sendPbHeader(sock, pb_head)) { ::close(sock); return; }
         char resp[128] = {0};
         int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
         ::close(sock);
@@ -1471,18 +1441,14 @@ void FileClientWindow::onRecycle()
 // 文件列表双击事件：打开文件
 void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 {
-    if (!item)
-        return;
+    if (!item) return;
     QString filename = item->text();
 
     // 返回上一级
-    if (filename == "..")
-    {
-        if (!currentDir_.isEmpty())
-        {
+    if (filename == "..") {
+        if (!currentDir_.isEmpty()) {
             QString dir = currentDir_;
-            if (dir.endsWith('/'))
-                dir.chop(1);
+            if (dir.endsWith('/')) dir.chop(1);
             int idx = dir.lastIndexOf('/');
             if (idx >= 0)
                 currentDir_ = dir.left(idx + 1);
@@ -1494,8 +1460,7 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
     }
 
     // 进入文件夹
-    if (filename.endsWith('/'))
-    {
+    if (filename.endsWith('/')) {
         currentDir_ += filename;
         onList();
         return;
@@ -1572,20 +1537,20 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 
             const QPixmap pix = QPixmap::fromImage(img);
 
-            auto *dlg2 = new QDialog(this);
+            auto* dlg2 = new QDialog(this);
             dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
             dlg2->setWindowTitle("预览图片 - " + filename);
             dlg2->resize(900, 700);
 
-            auto *label = new QLabel(dlg2);
+            auto* label = new QLabel(dlg2);
             label->setPixmap(pix);
             label->setAlignment(Qt::AlignCenter);
 
-            auto *scroll = new QScrollArea(dlg2);
+            auto* scroll = new QScrollArea(dlg2);
             scroll->setWidget(label);
             scroll->setWidgetResizable(true);
 
-            auto *layout = new QVBoxLayout(dlg2);
+            auto* layout = new QVBoxLayout(dlg2);
             layout->addWidget(scroll);
             dlg2->setLayout(layout);
             dlg2->show();
@@ -1594,17 +1559,17 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 
         if (isTextExt_(ext))
         {
-            auto *dlg2 = new QDialog(this);
+            auto* dlg2 = new QDialog(this);
             dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
             dlg2->setWindowTitle("预览文本 - " + filename);
             dlg2->resize(900, 700);
 
-            auto *edit = new QPlainTextEdit(dlg2);
+            auto* edit = new QPlainTextEdit(dlg2);
             edit->setReadOnly(true);
             edit->setPlainText(QString::fromUtf8(payload));
             edit->setLineWrapMode(QPlainTextEdit::NoWrap);
 
-            auto *layout = new QVBoxLayout(dlg2);
+            auto* layout = new QVBoxLayout(dlg2);
             layout->addWidget(edit);
             dlg2->setLayout(layout);
             dlg2->show();

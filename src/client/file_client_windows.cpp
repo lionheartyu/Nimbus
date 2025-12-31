@@ -760,7 +760,6 @@ void FileClientWindow::onList()
     if (!recvAll(sock, &resp_len, sizeof(resp_len))) { ::close(sock); return; }
 
     fileListWidget->clear();
-    // ★ 如果不是根目录，加“..”返回上一级
     if (!currentDir_.isEmpty())
         fileListWidget->addItem("..");
 
@@ -940,28 +939,24 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
     QMenu contextMenu;
     QAction *downloadAction = contextMenu.addAction("下载文件");
     QAction *viewAction = contextMenu.addAction("查看文件");
-    QAction *renameAction = contextMenu.addAction("重命名"); // ★加上这一行
+    QAction *renameAction = contextMenu.addAction("重命名");
     QAction *mkdirAction = contextMenu.addAction("新建文件夹");
+    QAction *moveAction = contextMenu.addAction("移动到…");
     QAction *deleteAction = nullptr;
     QAction *restoreAction = nullptr;
     QAction *removeAction = nullptr;
 
     if (!inRecycle)
-    {
         deleteAction = contextMenu.addAction("删除(移入回收站)");
-    }
-    else
-    {
+    else {
         restoreAction = contextMenu.addAction("还原");
         removeAction = contextMenu.addAction("彻底删除");
     }
 
     QAction *selectedAction = contextMenu.exec(fileListWidget->viewport()->mapToGlobal(pos));
     const QString filenameShown = item->text();
-
-    // 关键修复：在回收站模式下，请求里的 filename 必须带 recycle/ 前缀，
-    // 否则服务端会找错对象（可能导致“还原后名字变了/变成重复文件名”等问题）
-    const QString filenameForReq = inRecycle ? ("recycle/" + filenameShown) : filenameShown;
+    const QString fullPath = getFullPath_(filenameShown);
+    const QString filenameForReq = inRecycle ? ("recycle/" + filenameShown) : fullPath;
 
     if (selectedAction == downloadAction)
     {
@@ -1056,6 +1051,48 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
             QMessageBox::information(this, "新建文件夹成功", respText);
         else
             QMessageBox::warning(this, "新建文件夹失败", respText);
+
+        onList();
+        return;
+    }
+    if (selectedAction == moveAction)
+    {
+        bool ok = false;
+        QString dst = QInputDialog::getText(this,
+                                            "移动到",
+                                            "目标文件夹路径（如 foo/ 或 空表示根目录）：",
+                                            QLineEdit::Normal, currentDir_, &ok);
+        dst = dst.trimmed();
+        if (!ok) return;
+
+        QString dstPath;
+        if (dst.isEmpty())
+            dstPath = filenameShown;
+        else {
+            if (!dst.endsWith('/')) dst += '/';
+            dstPath = dst + filenameShown;
+        }
+
+        FileHeader header;
+        header.set_filename(filenameForReq.toStdString());
+        header.set_type(21);
+        header.set_extra(tokenExtra_(token_) + ";dst=" + dstPath.toStdString() + ";op=move");
+
+        std::string pb_head;
+        header.SerializeToString(&pb_head);
+
+        int sock = -1;
+        if (!connectToServer(sock, "10.20.32.88", 8080)) return;
+        if (!sendPbHeader(sock, pb_head)) { ::close(sock); return; }
+        char resp[128] = {0};
+        int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
+        ::close(sock);
+
+        QString respText = (n > 0) ? QString::fromUtf8(resp, n).trimmed() : QString();
+        if (respText.startsWith("MOVE OK"))
+            QMessageBox::information(this, "移动成功", respText);
+        else
+            QMessageBox::warning(this, "移动失败", respText);
 
         onList();
         return;
@@ -1386,7 +1423,7 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
     if (!item) return;
     QString filename = item->text();
 
-    // ★ 返回上一级
+    // 返回上一级
     if (filename == "..") {
         if (!currentDir_.isEmpty()) {
             QString dir = currentDir_;
@@ -1401,163 +1438,122 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
         return;
     }
 
-    // ★ 进入文件夹
+    // 进入文件夹
     if (filename.endsWith('/')) {
         currentDir_ += filename;
         onList();
         return;
     }
 
-    // ===== 其它类型：保持你原来的预览/打开逻辑 =====
-    const QString ext = fileExtLower_(filename);
+    // ★ 获取完整路径（关键！）
+    QString fullPath = currentDir_.isEmpty() ? filename : (currentDir_ + filename);
+    if (inRecycle)
+        fullPath = "recycle/" + filename;
 
-    // ===== 1) 图片/文本：走 type=9 内置预览 =====
+    // 后续所有预览/下载/外链等都用 fullPath
+    // 例如图片预览：
+    const QString ext = fileExtLower_(fullPath);
+
     if (isImageExt_(ext) || isTextExt_(ext))
     {
-        // 小进度条（无限忙碌）
-        auto *dlg = new QProgressDialog("正在加载预览…", QString(), 0, 0, this);
-        dlg->setWindowTitle("查看文件");
-        dlg->setWindowModality(Qt::ApplicationModal);
-        dlg->setCancelButton(nullptr);
-        dlg->setMinimumDuration(0);
-        dlg->setAutoClose(false);
-        dlg->setAutoReset(false);
-        dlg->show();
+        // ...原来的 type=9 预览逻辑...
+        FileHeader header;
+        header.set_filename(fullPath.toStdString()); // ★关键：用 fullPath
+        header.set_type(9);
 
-        struct Result
+        const std::string base = tokenExtra_(token_);
+        header.set_extra((base.empty() ? "" : (base + ";")) + std::string("max=2097152"));
+
+        std::string pb_head;
+        header.SerializeToString(&pb_head);
+
+        int sock = -1;
+        if (!connectToServer(sock, "10.20.32.88", 8080))
         {
-            bool ok = false;
-            QByteArray payload;
-            QString err;
-        };
+            logEdit->append("连接服务器失败！");
+            return;
+        }
 
-        auto *watcher = new QFutureWatcher<Result>(this);
-
-        const QString filenameCopy = filename;
-        const QString extCopy = ext;
-
-        // 预览 type=9（原本 extra 放 max bytes，改成 token + max）
-        auto future = QtConcurrent::run([filenameCopy, tokenCopy = token_]() -> Result
-                                        {
-            Result r;
-
-            FileHeader header;
-            header.set_filename(filenameCopy.toStdString());
-            header.set_type(9);
-
-            const std::string base = tokenExtra_(tokenCopy);
-            header.set_extra((base.empty() ? "" : (base + ";")) + std::string("max=2097152"));
-
-            std::string pb_head;
-            header.SerializeToString(&pb_head);
-
-            int sock = -1;
-            if (!connectToServer(sock, "10.20.32.88", 8080))
-            {
-                r.err = "连接服务器失败！";
-                return r;
-            }
-
-            if (!sendPbHeader(sock, pb_head))
-            {
-                r.err = "发送预览请求失败！";
-                ::close(sock);
-                return r;
-            }
-
-            QString err;
-            QByteArray payload;
-            const uint32_t kMaxPreviewBytes = 2u * 1024u * 1024u;
-            if (!recvLenAndPayload_(sock, kMaxPreviewBytes, &payload, &err))
-            {
-                r.err = err;
-                ::close(sock);
-                return r;
-            }
-
+        if (!sendPbHeader(sock, pb_head))
+        {
+            logEdit->append("发送预览请求失败！");
             ::close(sock);
-            r.ok = true;
-            r.payload = payload;
-            return r; });
+            return;
+        }
 
-        connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, dlg, extCopy, filenameCopy]()
-                {
-            dlg->close();
-            dlg->deleteLater();
+        QString err;
+        QByteArray payload;
+        const uint32_t kMaxPreviewBytes = 2u * 1024u * 1024u;
+        if (!recvLenAndPayload_(sock, kMaxPreviewBytes, &payload, &err))
+        {
+            logEdit->append("预览失败: " + err);
+            ::close(sock);
+            return;
+        }
 
-            const Result r = watcher->result();
-            watcher->deleteLater();
+        ::close(sock);
 
-            if (!r.ok)
+        // ====== 保留你原来的“图片/文本弹窗显示”逻辑 ======
+        if (isImageExt_(ext))
+        {
+            QBuffer buffer;
+            buffer.setData(payload);
+            if (!buffer.open(QIODevice::ReadOnly))
             {
-                logEdit->append("预览失败: " + r.err);
+                logEdit->append("图片预览失败：无法打开内存缓冲区。");
                 return;
             }
 
-            // ====== 保留你原来的“图片/文本弹窗显示”逻辑 ======
-            if (isImageExt_(extCopy))
+            QImageReader reader(&buffer);
+            reader.setDecideFormatFromContent(true);
+
+            const QImage img = reader.read();
+            if (img.isNull())
             {
-                QBuffer buffer;
-                buffer.setData(r.payload);
-                if (!buffer.open(QIODevice::ReadOnly))
-                {
-                    logEdit->append("图片预览失败：无法打开内存缓冲区。");
-                    return;
-                }
-
-                QImageReader reader(&buffer);
-                reader.setDecideFormatFromContent(true);
-
-                const QImage img = reader.read();
-                if (img.isNull())
-                {
-                    logEdit->append("图片预览失败：无法解码图片内容。");
-                    return;
-                }
-
-                const QPixmap pix = QPixmap::fromImage(img);
-
-                auto* dlg2 = new QDialog(this);
-                dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
-                dlg2->setWindowTitle("预览图片 - " + filenameCopy);
-                dlg2->resize(900, 700);
-
-                auto* label = new QLabel(dlg2);
-                label->setPixmap(pix);
-                label->setAlignment(Qt::AlignCenter);
-
-                auto* scroll = new QScrollArea(dlg2);
-                scroll->setWidget(label);
-                scroll->setWidgetResizable(true);
-
-                auto* layout = new QVBoxLayout(dlg2);
-                layout->addWidget(scroll);
-                dlg2->setLayout(layout);
-                dlg2->show();
+                logEdit->append("图片预览失败：无法解码图片内容。");
                 return;
             }
 
-            if (isTextExt_(extCopy))
-            {
-                auto* dlg2 = new QDialog(this);
-                dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
-                dlg2->setWindowTitle("预览文本 - " + filenameCopy);
-                dlg2->resize(900, 700);
+            const QPixmap pix = QPixmap::fromImage(img);
 
-                auto* edit = new QPlainTextEdit(dlg2);
-                edit->setReadOnly(true);
-                edit->setPlainText(QString::fromUtf8(r.payload));
-                edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+            auto* dlg2 = new QDialog(this);
+            dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
+            dlg2->setWindowTitle("预览图片 - " + filename);
+            dlg2->resize(900, 700);
 
-                auto* layout = new QVBoxLayout(dlg2);
-                layout->addWidget(edit);
-                dlg2->setLayout(layout);
-                dlg2->show();
-                return;
-            } });
+            auto* label = new QLabel(dlg2);
+            label->setPixmap(pix);
+            label->setAlignment(Qt::AlignCenter);
 
-        watcher->setFuture(future);
-        return;
+            auto* scroll = new QScrollArea(dlg2);
+            scroll->setWidget(label);
+            scroll->setWidgetResizable(true);
+
+            auto* layout = new QVBoxLayout(dlg2);
+            layout->addWidget(scroll);
+            dlg2->setLayout(layout);
+            dlg2->show();
+            return;
+        }
+
+        if (isTextExt_(ext))
+        {
+            auto* dlg2 = new QDialog(this);
+            dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
+            dlg2->setWindowTitle("预览文本 - " + filename);
+            dlg2->resize(900, 700);
+
+            auto* edit = new QPlainTextEdit(dlg2);
+            edit->setReadOnly(true);
+            edit->setPlainText(QString::fromUtf8(payload));
+            edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+
+            auto* layout = new QVBoxLayout(dlg2);
+            layout->addWidget(edit);
+            dlg2->setLayout(layout);
+            dlg2->show();
+            return;
+        }
     }
 
     // ===== 视频：走 type=8 拿到外链，然后用 Qt 内置播放器在线播放 =====
@@ -1579,7 +1575,7 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
             QString err;
         };
 
-        const QString filenameCopy = filename;
+        const QString filenameCopy = fullPath;
         auto *watcher = new QFutureWatcher<Result>(this);
 
         // 外链 type=8
@@ -1719,7 +1715,7 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 
         auto *watcher = new QFutureWatcher<Result>(this);
 
-        const QString filenameCopy = filename;
+        const QString filenameCopy = fullPath;
 
         // fix: 这里之前没带 token，导致 ERROR: Unauthorized
         auto future = QtConcurrent::run([filenameCopy, tokenCopy = token_]() -> Result

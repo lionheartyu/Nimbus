@@ -57,6 +57,10 @@ private slots:
 private:
     QString token_;      ///< 当前登录用户的 token
     QString currentDir_; ///< 当前浏览的目录前缀，默认为空字符串
+    QString getFullPath_(const QString &name) const
+    {
+        return currentDir_.isEmpty() ? name : (currentDir_ + name);
+    }
     // UI 控件成员
     QLineEdit *filePathEdit;     ///< 文件路径输入框
     QPushButton *browseBtn;      ///< 选择文件按钮

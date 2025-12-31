@@ -167,7 +167,16 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             if (head.type() == 3)
             {
                 std::vector<std::string> files;
-                if (minio_ && minio_->listObjects(files))
+                std::string prefix = getKv_(head.extra(), "prefix");
+                bool ok = false;
+                if (minio_)
+                {
+                    if (!prefix.empty())
+                        ok = minio_->listObjectsWithPrefix(prefix, files);
+                    else
+                        ok = minio_->listObjects(files);
+                }
+                if (ok)
                 {
                     ListFilesResponse resp;
                     for (const auto &f : files)
@@ -497,12 +506,37 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     dirname += '/';
 
                 bool ok = false;
-                if (minio_) ok = minio_->uploadEmpty(dirname); // 用空内容创建“文件夹”
+                if (minio_)
+                    ok = minio_->uploadEmpty(dirname); // 用空内容创建“文件夹”
 
                 if (ok)
                     conn->send("MKDIR OK\n");
                 else
                     conn->send("ERROR: MKDIR failed\n");
+                conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
+            // ===== 4) 移动 type=21 =====
+            if (head.type() == 21)
+            {
+                const std::string src = filename_;
+                const std::string dst = getKv_(head.extra(), "dst");
+                const std::string op = getKv_(head.extra(), "op"); // "copy" or "move"
+                if (dst.empty() || op.empty())
+                {
+                    conn->send("ERROR: dst/op required\n");
+                    conn->shutdown();
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                    return;
+                }
+                bool ok = minio_ && minio_->copyObject(src, dst);
+                if (ok && op == "move")
+                    ok = minio_->remove(src);
+                if (ok)
+                    conn->send(op == "move" ? "MOVE OK\n" : "COPY OK\n");
+                else
+                    conn->send("ERROR: Move/Copy failed\n");
                 conn->shutdown();
                 resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;

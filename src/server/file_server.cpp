@@ -530,6 +530,29 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;
             }
+
+            // ---- 查询服务器磁盘空间 type=30 ----
+            if (head.type() == 30)
+            {
+                struct statvfs vfs;
+                // ★ 这里的路径请改成你的 MinIO 数据目录，比如 "/home/lion/minio/data"
+                const char *path = "/home/lion/minio/data";
+                if (statvfs(path, &vfs) != 0)
+                {
+                    conn->send("ERROR: statvfs failed\n");
+                    conn->shutdown();
+                    resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                    return;
+                }
+                uint64_t total = vfs.f_frsize * vfs.f_blocks;
+                uint64_t free = vfs.f_frsize * vfs.f_bfree;
+                uint64_t used = total - free;
+                std::string resp = std::to_string(used) + "/" + std::to_string(total);
+                conn->send(resp + "\n");
+                conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
             // ===== 4) 移动 type=21 =====
             if (head.type() == 21)
             {

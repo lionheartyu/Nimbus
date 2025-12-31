@@ -3,6 +3,7 @@
 #include <string>
 #include <fstream>
 #include <memory>
+#include <sys/statvfs.h>
 #include "../storage/minio_storage.h"
 #include "../../proto/file.pb.h" // 路径按实际调整
 

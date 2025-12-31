@@ -8,7 +8,7 @@
 #include <QThread>
 #include <QListWidget> // 新增
 #include <QString>
-
+#include <qlabel.h>
 /// Nimbus 文件客户端主窗口类
 class FileClientWindow : public QWidget
 {
@@ -29,6 +29,11 @@ public:
     /// 上传单个文件（带相对路径）
     void uploadFileWithRelativePath(const QString &absPath, const QString &relPath);
 
+    // 刷新空间使用情况进度条
+    void refreshSpaceBar();
+
+    // 格式化字节大小为可读字符串
+    QString formatSize_(uint64_t bytes);
 private slots:
     /// 选择文件按钮槽函数
     void onBrowse();
@@ -79,6 +84,10 @@ private:
 
     bool inRecycle = false;           ///< 是否处于回收站视图
     QPushButton *logoutBtn = nullptr; ///< 登出按钮
-QLineEdit *searchEdit = nullptr;
-QPushButton *searchBtn = nullptr;
+    QLineEdit *searchEdit = nullptr;
+    QPushButton *searchBtn = nullptr;
+    QProgressBar *spaceBar = nullptr;
+    QLabel *spaceLabel = nullptr;
+    uint64_t spaceTotal_ = 0;
+    uint64_t spaceUsed_ = 0;
 };

@@ -103,6 +103,28 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
             file_size_ = head.filesize();
             pb_head_parsed_ = true;
 
+            // ===== 新增：查询已上传分片 type=13 =====
+            if (head.type() == 13)
+            {
+                std::string uploadId = getKv_(head.extra(), "uploadId");
+                std::vector<uint64_t> uploaded;
+                const std::string sessionDir = chunkBaseDir_() + "/" + uploadId;
+                for (uint64_t idx = 0; ; ++idx) {
+                    std::string partPath = sessionDir + "/" + std::to_string(idx) + ".part";
+                    if (!fileExists_(partPath)) break;
+                    uploaded.push_back(idx);
+                }
+                // 序列化返回
+                std::string out;
+                for (auto idx : uploaded) {
+                    out += std::to_string(idx) + ";";
+                }
+                uint32_t len = static_cast<uint32_t>(out.size());
+                conn->send(std::string(reinterpret_cast<const char *>(&len), 4));
+                conn->send(out);
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
             // ===== 2) 认证与登录/注册 =====
             if (head.type() == 12) // 注册
             {
@@ -455,6 +477,13 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     conn->shutdown();
                     resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                     return;
+                }
+
+                // 新增：第一个分片时清理旧分片和合并文件
+                if (index == 0) {
+                    std::string sessionDir = chunkBaseDir_() + "/" + uploadId;
+                    std::string mergedPath = mergedBaseDir_() + "/" + uploadId + ".merged";
+                    cleanupSession_(sessionDir, mergedPath, total);
                 }
 
                 const std::string sessionDir = chunkBaseDir_() + "/" + uploadId;

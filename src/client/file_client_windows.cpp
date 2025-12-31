@@ -539,16 +539,34 @@ void FileClientWindow::onUpload()
             const QString uploadId = makeUploadId_();
             const qint64 total = (filesize + kChunkSize - 1) / kChunkSize;
 
-            QMetaObject::invokeMethod(this, [=] {
-                logEdit->append(QString("大文件分片上传: %1, size=%2, chunks=%3, uploadId=%4")
-                                    .arg(relPath)
-                                    .arg(filesize)
-                                    .arg(total)
-                                    .arg(uploadId));
-            }, Qt::QueuedConnection);
+            // ===== 新增：查询已上传分片 =====
+            std::set<qint64> uploadedChunks;
+            {
+                FileHeader header;
+                header.set_type(13); // type=13 查询分片
+                header.set_extra(QString("uploadId=%1").arg(uploadId).toStdString());
+                std::string pb_head;
+                header.SerializeToString(&pb_head);
+
+                int sock = -1;
+                if (connectToServer(sock, "10.20.32.88", 8080, kSockTimeoutSecShort)) {
+                    sendPbHeader(sock, pb_head);
+                    uint32_t resp_len = 0;
+                    if (recvAll(sock, &resp_len, sizeof(resp_len)) && resp_len > 0 && resp_len < 4096) {
+                        std::string resp_buf(resp_len, '\0');
+                        if (recvAll(sock, &resp_buf[0], resp_len)) {
+                            QStringList parts = QString::fromStdString(resp_buf).split(';', Qt::SkipEmptyParts);
+                            for (const QString &s : parts) uploadedChunks.insert(s.toLongLong());
+                        }
+                    }
+                    ::close(sock);
+                }
+            }
 
             for (qint64 idx = 0; idx < total; ++idx)
             {
+                if (uploadedChunks.count(idx)) continue; // 跳过已上传分片
+
                 const qint64 offset = idx * kChunkSize;
                 const qint64 thisSize = std::min(kChunkSize, filesize - offset);
 

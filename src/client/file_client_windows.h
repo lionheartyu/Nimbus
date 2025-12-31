@@ -54,6 +54,12 @@ private slots:
     /// 回收站按钮槽函数
     void onRecycle();
 
+    // 文件搜索按钮槽函数
+    void onSearch();
+
+    // 登出按钮槽函数
+    void onLogout();
+
 private:
     QString token_;      ///< 当前登录用户的 token
     QString currentDir_; ///< 当前浏览的目录前缀，默认为空字符串
@@ -70,6 +76,8 @@ private:
     QPushButton *recycleBtn;     ///< 回收站按钮
     QProgressBar *progressBar;   ///< 上传/下载进度条
     QListWidget *fileListWidget; ///< 文件列表控件
-
+    QLineEdit *searchEdit = nullptr;// 文件搜索输入框
+    QPushButton *searchBtn = nullptr;// 文件搜索按钮
     bool inRecycle = false; ///< 是否处于回收站视图
+    QPushButton *logoutBtn = nullptr; ///< 登出按钮
 };

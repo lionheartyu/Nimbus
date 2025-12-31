@@ -204,3 +204,25 @@ bool dbCheckToken_(const DbCfg &cfg, const std::string &token)
     mysql_close(m);
     return ok;
 }
+
+bool dbLogout_(const DbCfg &cfg, const std::string &token){
+    if (token.empty())
+        return false;
+
+    MYSQL *m = mysqlConnect_(cfg);
+    if (!m)
+        return false;
+
+    // 删除sessions表中的token
+    const std::string t = escape_(m, token);
+    const std::string sql = "DELETE FROM sessions WHERE token='" + t + "'";
+
+    if (mysql_query(m, sql.c_str()) != 0)
+    {
+        mysql_close(m);
+        return false;
+    }
+
+    mysql_close(m);
+    return true;
+}

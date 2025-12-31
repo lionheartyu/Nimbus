@@ -28,7 +28,8 @@
 #include <QMediaPlayer>
 #include <QVideoWidget>
 #include "../../proto/file.pb.h"
-
+#include <QLineEdit>
+#include <QPushButton>
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
@@ -37,6 +38,7 @@
 #include <vector>
 #include <QUuid> // add
 #include <qinputdialog.h>
+#include "login_dialog.h"
 namespace
 {
 
@@ -461,6 +463,18 @@ FileClientWindow::FileClientWindow(QWidget *parent)
     fileLayout->addWidget(browseBtn, 0);
     fileLayout->setSpacing(10);
 
+    // 搜索框和按钮
+    searchEdit = new QLineEdit(this);
+    searchEdit->setPlaceholderText("输入文件名关键字搜索…");
+    searchEdit->setMinimumHeight(32);
+
+    searchBtn = new QPushButton("搜索", this);
+    searchBtn->setMinimumHeight(32);
+    searchBtn->setStyleSheet(primaryBtn);
+
+    fileLayout->addWidget(searchEdit);
+    fileLayout->addWidget(searchBtn);
+
     // 顶部操作区：更像网盘“工具条”
     QHBoxLayout *toolbarLayout = new QHBoxLayout;
     toolbarLayout->addWidget(uploadBtn, 0);
@@ -483,6 +497,12 @@ FileClientWindow::FileClientWindow(QWidget *parent)
     mainLayout->setContentsMargins(18, 14, 18, 16);
     setLayout(mainLayout);
 
+    // 登出按钮（右上角）
+    logoutBtn = new QPushButton("登出", this);
+    logoutBtn->setMinimumHeight(32);
+    logoutBtn->setStyleSheet(warnBtn);
+    toolbarLayout->addWidget(logoutBtn, 0);
+
     // 绑定按钮事件
     connect(browseBtn, &QPushButton::clicked, this, &FileClientWindow::onBrowse);
     connect(uploadBtn, &QPushButton::clicked, this, &FileClientWindow::onUpload);
@@ -496,6 +516,8 @@ FileClientWindow::FileClientWindow(QWidget *parent)
             this,
             &FileClientWindow::onListContextMenu);
     connect(fileListWidget, &QListWidget::itemDoubleClicked, this, &FileClientWindow::onFileDoubleClicked);
+    connect(searchBtn, &QPushButton::clicked, this, &FileClientWindow::onSearch);
+    connect(logoutBtn, &QPushButton::clicked, this, &FileClientWindow::onLogout);
 }
 
 // 浏览按钮槽函数：弹出文件选择对话框
@@ -754,22 +776,42 @@ void FileClientWindow::onList()
     int sock = -1;
     if (!connectToServer(sock, "10.20.32.88", 8080))
         return;
-    if (!sendPbHeader(sock, pb_head)) { ::close(sock); return; }
+    if (!sendPbHeader(sock, pb_head))
+    {
+        ::close(sock);
+        return;
+    }
 
     uint32_t resp_len = 0;
-    if (!recvAll(sock, &resp_len, sizeof(resp_len))) { ::close(sock); return; }
+    if (!recvAll(sock, &resp_len, sizeof(resp_len)))
+    {
+        ::close(sock);
+        return;
+    }
 
     fileListWidget->clear();
     if (!currentDir_.isEmpty())
         fileListWidget->addItem("..");
 
-    if (resp_len == 0) { ::close(sock); return; }
+    if (resp_len == 0)
+    {
+        ::close(sock);
+        return;
+    }
 
     std::string resp_buf(resp_len, '\0');
-    if (!recvAll(sock, &resp_buf[0], resp_len)) { ::close(sock); return; }
+    if (!recvAll(sock, &resp_buf[0], resp_len))
+    {
+        ::close(sock);
+        return;
+    }
 
     ListFilesResponse resp;
-    if (!resp.ParseFromString(resp_buf)) { ::close(sock); return; }
+    if (!resp.ParseFromString(resp_buf))
+    {
+        ::close(sock);
+        return;
+    }
 
     for (int i = 0; i < resp.filenames_size(); ++i)
     {
@@ -948,7 +990,8 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
 
     if (!inRecycle)
         deleteAction = contextMenu.addAction("删除(移入回收站)");
-    else {
+    else
+    {
         restoreAction = contextMenu.addAction("还原");
         removeAction = contextMenu.addAction("彻底删除");
     }
@@ -1063,13 +1106,16 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
                                             "目标文件夹路径（如 foo/ 或 空表示根目录）：",
                                             QLineEdit::Normal, currentDir_, &ok);
         dst = dst.trimmed();
-        if (!ok) return;
+        if (!ok)
+            return;
 
         QString dstPath;
         if (dst.isEmpty())
             dstPath = filenameShown;
-        else {
-            if (!dst.endsWith('/')) dst += '/';
+        else
+        {
+            if (!dst.endsWith('/'))
+                dst += '/';
             dstPath = dst + filenameShown;
         }
 
@@ -1082,8 +1128,13 @@ void FileClientWindow::onListContextMenu(const QPoint &pos)
         header.SerializeToString(&pb_head);
 
         int sock = -1;
-        if (!connectToServer(sock, "10.20.32.88", 8080)) return;
-        if (!sendPbHeader(sock, pb_head)) { ::close(sock); return; }
+        if (!connectToServer(sock, "10.20.32.88", 8080))
+            return;
+        if (!sendPbHeader(sock, pb_head))
+        {
+            ::close(sock);
+            return;
+        }
         char resp[128] = {0};
         int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
         ::close(sock);
@@ -1420,14 +1471,18 @@ void FileClientWindow::onRecycle()
 // 文件列表双击事件：打开文件
 void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 {
-    if (!item) return;
+    if (!item)
+        return;
     QString filename = item->text();
 
     // 返回上一级
-    if (filename == "..") {
-        if (!currentDir_.isEmpty()) {
+    if (filename == "..")
+    {
+        if (!currentDir_.isEmpty())
+        {
             QString dir = currentDir_;
-            if (dir.endsWith('/')) dir.chop(1);
+            if (dir.endsWith('/'))
+                dir.chop(1);
             int idx = dir.lastIndexOf('/');
             if (idx >= 0)
                 currentDir_ = dir.left(idx + 1);
@@ -1439,7 +1494,8 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
     }
 
     // 进入文件夹
-    if (filename.endsWith('/')) {
+    if (filename.endsWith('/'))
+    {
         currentDir_ += filename;
         onList();
         return;
@@ -1516,20 +1572,20 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 
             const QPixmap pix = QPixmap::fromImage(img);
 
-            auto* dlg2 = new QDialog(this);
+            auto *dlg2 = new QDialog(this);
             dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
             dlg2->setWindowTitle("预览图片 - " + filename);
             dlg2->resize(900, 700);
 
-            auto* label = new QLabel(dlg2);
+            auto *label = new QLabel(dlg2);
             label->setPixmap(pix);
             label->setAlignment(Qt::AlignCenter);
 
-            auto* scroll = new QScrollArea(dlg2);
+            auto *scroll = new QScrollArea(dlg2);
             scroll->setWidget(label);
             scroll->setWidgetResizable(true);
 
-            auto* layout = new QVBoxLayout(dlg2);
+            auto *layout = new QVBoxLayout(dlg2);
             layout->addWidget(scroll);
             dlg2->setLayout(layout);
             dlg2->show();
@@ -1538,17 +1594,17 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
 
         if (isTextExt_(ext))
         {
-            auto* dlg2 = new QDialog(this);
+            auto *dlg2 = new QDialog(this);
             dlg2->setAttribute(Qt::WA_DeleteOnClose, true);
             dlg2->setWindowTitle("预览文本 - " + filename);
             dlg2->resize(900, 700);
 
-            auto* edit = new QPlainTextEdit(dlg2);
+            auto *edit = new QPlainTextEdit(dlg2);
             edit->setReadOnly(true);
             edit->setPlainText(QString::fromUtf8(payload));
             edit->setLineWrapMode(QPlainTextEdit::NoWrap);
 
-            auto* layout = new QVBoxLayout(dlg2);
+            auto *layout = new QVBoxLayout(dlg2);
             layout->addWidget(edit);
             dlg2->setLayout(layout);
             dlg2->show();
@@ -1788,5 +1844,80 @@ void FileClientWindow::onFileDoubleClicked(QListWidgetItem *item)
             QDesktopServices::openUrl(QUrl(r.url)); });
 
         watcher->setFuture(future);
+    }
+}
+// 新增：搜索按钮槽函数，实现文件列表搜索过滤功能
+void FileClientWindow::onSearch()
+{
+    QString keyword = searchEdit->text().trimmed();
+    if (keyword.isEmpty())
+    {
+        // 显示全部
+        for (int i = 0; i < fileListWidget->count(); ++i)
+            fileListWidget->item(i)->setHidden(false);
+        return;
+    }
+    for (int i = 0; i < fileListWidget->count(); ++i)
+    {
+        QListWidgetItem *item = fileListWidget->item(i);
+        item->setHidden(!item->text().contains(keyword, Qt::CaseInsensitive));
+    }
+}
+
+void FileClientWindow::onLogout()
+{
+    if (token_.isEmpty())
+    {
+        QMessageBox::information(this, "登出", "当前未登录。");
+        return;
+    }
+
+    FileHeader header;
+    header.set_type(13);
+    header.set_extra("token=" + token_.toStdString());
+
+    std::string pb_head;
+    header.SerializeToString(&pb_head);
+
+    int sock = -1;
+    if (!connectToServer(sock, "10.20.32.88", 8080))
+    {
+        QMessageBox::warning(this, "登出失败", "连接服务器失败！");
+        return;
+    }
+    if (!sendPbHeader(sock, pb_head))
+    {
+        ::close(sock);
+        QMessageBox::warning(this, "登出失败", "发送请求失败！");
+        return;
+    }
+    char resp[128] = {0};
+    int n = ::recv(sock, resp, sizeof(resp) - 1, 0);
+    ::close(sock);
+
+    QString respText = (n > 0) ? QString::fromUtf8(resp, n).trimmed() : QString();
+    if (respText.startsWith("LOGOUT OK"))
+    {
+        token_.clear();
+        QMessageBox::information(this, "登出成功", "已成功登出。");
+        fileListWidget->clear();
+        logEdit->clear();
+
+        this->hide();
+        LoginDialog loginDlg;
+        if (loginDlg.exec() == QDialog::Accepted)
+        {
+            // ★ 关键：取回 token 并赋值
+            token_ = loginDlg.getToken();
+            this->show();
+        }
+        else
+        {
+            qApp->quit();
+        }
+    }
+    else
+    {
+        QMessageBox::warning(this, "登出失败", respText);
     }
 }

@@ -40,3 +40,9 @@ bool dbLogin_(const DbCfg &cfg, const std::string &username, const std::string &
 /// @param token 待校验的token
 /// @return 有效返回true，否则false
 bool dbCheckToken_(const DbCfg &cfg, const std::string &token);
+
+/// 用户登出，删除sessions表中的token
+/// @param cfg   数据库配置
+/// @param token 待删除的token
+/// @return 成功返回true，否则false
+bool dbLogout_(const DbCfg &cfg, const std::string &token);

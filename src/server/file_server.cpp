@@ -146,6 +146,19 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 return;
             }
 
+            // 登出 type=13
+            if (head.type() == 13)
+            {
+                const std::string token = getKv_(head.extra(), "token");
+                if (dbLogout_(g_db, token))
+                    conn->send("LOGOUT OK\n");
+                else
+                    conn->send("ERROR: Logout failed\n");
+                conn->shutdown();
+                resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
+                return;
+            }
+
             // 其余所有操作：必须带 token=xxx（在 extra 里）
             const std::string token = getKv_(head.extra(), "token");
             if (!dbCheckToken_(g_db, token))

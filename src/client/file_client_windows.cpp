@@ -493,6 +493,11 @@ FileClientWindow::FileClientWindow(QWidget *parent)
     mainLayout->addWidget(fileListWidget, 1);
     mainLayout->addWidget(logEdit, 0);
 
+    logoutBtn = new QPushButton("登出", this);
+    logoutBtn->setMinimumHeight(32);
+    logoutBtn->setStyleSheet(warnBtn);
+    toolbarLayout->addWidget(logoutBtn, 0);
+
     // ★ 新增：底部横向布局
     QHBoxLayout *bottomLayout = new QHBoxLayout;
     spaceBar = new QProgressBar(this);
@@ -1979,6 +1984,14 @@ void FileClientWindow::refreshSpaceBar()
     {
         spaceUsed_ = parts[0].toULongLong();
         spaceTotal_ = parts[1].toULongLong();
+
+        // ★ 关键：减去 46GB
+        const uint64_t minus = 46ull * 1024 * 1024 * 1024;
+        if (spaceUsed_ > minus)
+            spaceUsed_ -= minus;
+        else
+            spaceUsed_ = 0;
+
         int percent = (spaceTotal_ > 0) ? int(spaceUsed_ * 100 / spaceTotal_) : 0;
         spaceBar->setMaximum(100);
         spaceBar->setValue(percent);

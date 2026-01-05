@@ -274,14 +274,15 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 // 后台线程 copy+remove
                 std::thread([this, src, dst]()
                             {
-                    if (!minio_) return;
-                    if (!minio_->copyObject(src, dst)) {
+                    auto minio = std::make_unique<MinioStorage>("127.0.0.1:9000", "minioadmin", "minioadmin", "data");
+                    if (!minio) return;
+                    if (!minio->copyObject(src, dst)) {
                         std::cerr << "[DELETE] copy to recycle failed: " << src << " -> " << dst << std::endl;
                         return;
                     }
-                    if (!minio_->remove(src)) {
+                    if (!minio->remove(src)) {
                         std::cerr << "[DELETE] remove original failed: " << src << std::endl;
-                        (void)minio_->remove(dst);
+                        (void)minio->remove(dst);
                     } })
                     .detach();
 
@@ -329,14 +330,15 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 // 后台线程 copy+remove
                 std::thread([this, recycle_name, origin_name]()
                             {
-                    if (!minio_) return;
-                    if (!minio_->copyObject(recycle_name, origin_name)) {
+                    auto minio = std::make_unique<MinioStorage>("127.0.0.1:9000", "minioadmin", "minioadmin", "data");
+                    if (!minio) return;
+                    if (!minio->copyObject(recycle_name, origin_name)) {
                         std::cerr << "[RESTORE] copy failed: " << recycle_name << " -> " << origin_name << std::endl;
                         return;
                     }
-                    if (!minio_->remove(recycle_name)) {
+                    if (!minio->remove(recycle_name)) {
                         std::cerr << "[RESTORE] remove recycle failed: " << recycle_name << std::endl;
-                        (void)minio_->remove(origin_name);
+                        (void)minio->remove(origin_name);
                     } })
                     .detach();
 
@@ -355,8 +357,9 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 // 后台线程 remove
                 std::thread([this, recycle_name]()
                             {
-                    if (!minio_) return;
-                    if (!minio_->remove(recycle_name)) {
+                    auto minio = std::make_unique<MinioStorage>("127.0.0.1:9000", "minioadmin", "minioadmin", "data");            
+                    if (!minio) return;
+                    if (!minio->remove(recycle_name)) {
                         std::cerr << "[REMOVE] failed: " << recycle_name << std::endl;
                     } })
                     .detach();
@@ -742,12 +745,12 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                     conn->shutdown();
 
                     // 后台线程上传到 Minio 并清理临时文件
-                    std::thread([this, mergedPath, objectName, sessionDir, total]()
-                                {
-                        if (minio_ && minio_->upload(mergedPath, objectName))
+                    std::thread([mergedPath, objectName, sessionDir, total]() {
+                        auto minio = std::make_unique<MinioStorage>("127.0.0.1:9000", "minioadmin", "minioadmin", "data");
+                        if (minio->upload(mergedPath, objectName))
                             std::remove(mergedPath.c_str());
-                        cleanupSession_(sessionDir, mergedPath, total); })
-                        .detach();
+                        cleanupSession_(sessionDir, mergedPath, total);
+                    }).detach();
 
                     resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                     return;
@@ -758,16 +761,18 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                 std::cout << std::endl
                           << "File received: " << filename_ << std::endl;
 
-                // 上传到 Minio，成功后删除本地文件
-                if (minio_ && minio_->upload(filename_, filename_))
-                {
-                    std::cout << "Upload to Minio success: " << filename_ << std::endl;
-                    std::remove(filename_.c_str());
-                }
-                else
-                {
-                    std::cerr << "Upload to Minio failed: " << filename_ << std::endl;
-                }
+                // 上传到 Minio，成功后删除本地文件（后台线程）
+                std::string local_file = filename_;
+                std::string remote_file = filename_;
+                std::thread([local_file, remote_file]() {
+                    auto minio = std::make_unique<MinioStorage>("127.0.0.1:9000", "minioadmin", "minioadmin", "data");
+                    if (minio->upload(local_file, remote_file)) {
+                        std::cout << "Upload to Minio success: " << local_file << std::endl;
+                        std::remove(local_file.c_str());
+                    } else {
+                        std::cerr << "Upload to Minio failed: " << local_file << std::endl;
+                    }
+                }).detach();
 
                 resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);
                 return;

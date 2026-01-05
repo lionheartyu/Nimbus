@@ -1,42 +1,37 @@
 @startuml
-title Nimbus MinioStorage 模块关系图
+title Nimbus 云盘存储管理与文件操作流程图
 
-class MinioStorage {
-    - std::string bucket_
-    - std::shared_ptr<Aws::S3::S3Client> client_
-    --
-    + MinioStorage(endpoint, access_key, secret_key, bucket)
-    + bool upload(localFile, objectName)
-    + bool download(objectName, localFile)
-    + bool remove(objectName)
-    + bool listObjects(objects)
-    + bool listObjectsWithPrefix(prefix, objects)
-    + bool copyObject(src, dst)
-    + std::string presignedUrl(objectName, expireSeconds)
-}
+start
 
-class "urlEncodeAllBytes_" as UrlEncode {
-    + std::string urlEncodeAllBytes_(s)
-}
+:接收文件操作请求（上传/下载/删除/重命名/回收站）;
+if (上传文件?) then (是)
+  if (大文件?) then (是)
+    :分片上传;
+    :所有分片接收完毕;
+    :合并分片;
+    :上传到 MinIO;
+  else
+    :直接上传到 MinIO;
+  endif
+  :返回上传结果;
+elseif (下载文件?) then (是)
+  :从 MinIO 下载对象;
+  :保存为本地文件;
+  :返回下载结果;
+elseif (删除文件?) then (是)
+  :逻辑删除（移动到回收站前缀）;
+  :返回删除结果;
+elseif (还原文件?) then (是)
+  :从回收站前缀移动回原目录;
+  :返回还原结果;
+elseif (彻底删除?) then (是)
+  :从 MinIO 删除对象;
+  :返回彻底删除结果;
+elseif (重命名/移动?) then (是)
+  :调用 MinIO 对象拷贝接口;
+  :删除原对象;
+  :返回操作结果;
+endif
 
-MinioStorage ..> "Aws::S3::S3Client" : 使用
-MinioStorage ..> UrlEncode : 拷贝对象时编码Key
-
-MinioStorage : +upload() 上传本地文件到MinIO
-MinioStorage : +download() 下载对象到本地
-MinioStorage : +remove() 删除对象
-MinioStorage : +listObjects() 列举所有对象
-MinioStorage : +listObjectsWithPrefix() 按前缀列举对象
-MinioStorage : +copyObject() 拷贝对象（支持分片）
-MinioStorage : +presignedUrl() 生成预签名URL
-
-note right of MinioStorage
-封装了 MinIO/S3 的常用操作，
-包括上传、下载、删除、列举、拷贝和生成外链等。
-end note
-
-note right of UrlEncode
-工具函数，对 S3 Key 进行百分号编码
-end note
-
+stop
 @enduml

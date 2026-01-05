@@ -1,0 +1,52 @@
+@startuml
+title Nimbus 云盘服务端主要流程活动图
+
+start
+
+:启动服务端（初始化 Muduo、MinIO、MySQL）;
+:监听客户端连接;
+
+:等待客户端连接;
+:新连接建立，重置上传状态;
+
+while (有数据到达?)
+  :解析 Protobuf 头;
+  if (注册/登录/登出?) then (是)
+    :处理注册/登录/登出请求;
+    :返回结果并关闭连接;
+  else
+    :校验 token;
+    if (token 无效?) then (是)
+      :返回未授权错误并关闭连接;
+    else
+      :按 type 分发业务;
+      if (文件列表/回收站列表?) then (是)
+        :列举对象并返回;
+      elseif (下载/预览?) then (是)
+        :从 MinIO 下载文件到临时目录;
+        :读取并发送文件内容;
+      elseif (删除/还原/彻底删除?) then (是)
+        :后台线程 copy/remove 对象;
+        :返回操作结果;
+      elseif (上传?) then (是)
+        if (分片上传?) then (是)
+          :接收分片并保存;
+          if (所有分片接收完?) then (是)
+            :合并分片;
+            :后台线程上传到 MinIO 并清理;
+          endif
+        else
+          :接收文件并保存;
+          :上传到 MinIO 并删除本地文件;
+        endif
+        :返回上传结果;
+      else
+        :处理重命名、移动、创建文件夹、查询空间等;
+        :返回操作结果;
+      endif
+    endif
+  endif
+endwhile
+
+stop
+@enduml

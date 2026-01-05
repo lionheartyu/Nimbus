@@ -1,0 +1,21 @@
+@startuml
+title Nimbus 云盘系统 Protobuf 通信流程图
+
+actor Client as "客户端"
+participant "Protocol Buffers\n序列化" as PB1
+participant "网络传输\n(TCP)" as Net
+participant "Protocol Buffers\n反序列化" as PB2
+participant Server as "服务端"
+
+Client -> PB1 : 构造请求消息对象
+PB1 -> Net : 序列化为二进制数据
+Net -> PB2 : 发送二进制数据
+PB2 -> Server : 反序列化为消息对象
+Server -> Server : 处理业务逻辑
+Server -> PB2 : 构造响应消息对象
+PB2 -> Net : 序列化为二进制数据
+Net -> PB1 : 发送二进制数据
+PB1 -> Client : 反序列化为响应对象
+Client -> Client : 处理响应结果
+
+@enduml

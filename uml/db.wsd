@@ -1,37 +1,48 @@
 @startuml
-title Nimbus 数据库操作简易关系图
+title Nimbus 云盘系统 MySQL 用户认证与权限管理流程图
 
-class DbCfg {
-    host
-    port
-    user
-    pass
-    db
-}
+start
 
-class MYSQL
+:用户注册请求;
+:连接 MySQL 数据库;
+:生成随机盐，密码加盐哈希;
+:插入 users 表;
+if (插入成功?) then (是)
+  :注册成功;
+else
+  :返回错误（如用户名已存在）;
+endif
 
-class "注册用户\ndbRegister_" as Register
-class "用户登录\ndbLogin_" as Login
-class "校验Token\ndbCheckToken_" as CheckToken
+:用户登录请求;
+:连接 MySQL 数据库;
+:查询 users 表，获取密码哈希和盐;
+if (用户名存在?) then (是)
+  :密码加盐哈希比对;
+  if (密码正确?) then (是)
+    :生成 token;
+    :插入 sessions 表;
+    :登录成功，返回 token;
+  else
+    :返回错误（密码错误）;
+  endif
+else
+  :返回错误（用户名不存在）;
+endif
 
-DbCfg --> Register : 数据库配置
-DbCfg --> Login
-DbCfg --> CheckToken
+:敏感操作请求（如文件操作）;
+:校验 token;
+:连接 MySQL 数据库;
+:查询 sessions 表，验证 token 是否有效;
+if (token 有效?) then (是)
+  :允许操作;
+else
+  :拒绝操作，返回未授权;
+endif
 
-Register --> MYSQL : 连接数据库
-Login --> MYSQL
-CheckToken --> MYSQL
+:用户登出请求;
+:连接 MySQL 数据库;
+:删除 sessions 表中的 token;
+:登出成功;
 
-Register : 生成盐
-Register : 密码哈希
-Register : 写入users表
-
-Login : 查询users表
-Login : 校验密码
-Login : 生成token
-Login : 写入sessions表
-
-CheckToken : 查询sessions表
-
+stop
 @enduml

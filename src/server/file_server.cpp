@@ -723,6 +723,7 @@ void FileServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf, Timestamp)
                         const std::string partPath = sessionDir + "/" + std::to_string(i) + ".part";
                         if (!fileExists_(partPath))
                         {
+                            //有分片缺失，断点续传只需要补传缺失分片k
                             conn->send(std::string("ERROR: Missing part ") + std::to_string(i) + "\n");
                             conn->shutdown();
                             resetState_(pb_head_parsed_, pb_head_len_, pb_head_buf_, filename_, file_size_, received_, receiving_, outfile_);

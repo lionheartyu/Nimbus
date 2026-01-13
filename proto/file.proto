@@ -1,12 +1,14 @@
 syntax = "proto3";
 
+// 文件操作请求头
 message FileHeader {
-  string filename = 1;
-  uint64 filesize = 2;
-  int32 type = 3; // 1=上传，2=下载，3=列举，4=删除，5=列举回收站，6=还原，7=彻底删除, 11=登录, 12=注册
-  string extra = 4; // 扩展：token=xxx;uploadId=... 等
+  string filename = 1;      // 文件名（上传、下载、删除等操作时使用）
+  uint64 filesize = 2;      // 文件大小（上传时使用）
+  int32 type = 3;           // 操作类型：1=上传，2=下载，3=列举，4=删除，5=列举回收站，6=还原，7=彻底删除, 11=登录, 12=注册
+  string extra = 4;         // 扩展字段，如 token=xxx;uploadId=... 等（用于鉴权、分片上传等场景）
 }
 
+// 文件列表响应
 message ListFilesResponse {
-  repeated string filenames = 1;
+  repeated string filenames = 1; // 文件名列表（用于列举文件或回收站文件时返回）
 }
